@@ -7,6 +7,7 @@ import os
 import random
 import re as regex
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -21,6 +22,7 @@ except ImportError:  # pragma: no cover - exercised only without the extra
     curl_requests = None
 
 collections.Callable = collections.abc.Callable
+
 
 class _Ansi:
     """A terminal colour that disappears when colour is switched off."""
@@ -53,6 +55,118 @@ def set_quiet(enabled):
     """Silence progress lines and the banner; warnings and results still print."""
     global _quiet
     _quiet = bool(enabled)
+
+
+class _Status:
+    """A one-line progress indicator for interactive terminals.
+
+    It stays completely silent when stderr is not a terminal (pipes, CI logs,
+    cron mail), when --quiet is used, and when --debug asks for the full step
+    trace instead. Nothing here ever touches stdout, so reports and JSON stay
+    clean.
+    """
+
+    SPINNER = "|/-\\"
+    BAR_WIDTH = 24
+
+    def __init__(self):
+        self.allowed = True
+        self.active = False
+        self.text = ""
+        self.stream = sys.stderr
+        self._frame = 0
+        self._width = 0
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = None
+
+    def enabled(self):
+        if not self.allowed or _quiet:
+            return False
+        try:
+            return bool(self.stream.isatty())
+        except (AttributeError, ValueError):
+            return False
+
+    def start(self, text):
+        """Show ``text`` next to a spinner (no-op when not on a terminal)."""
+        if not self.enabled():
+            return
+        with self._lock:
+            self.text = text
+            if self.active:
+                # Redraw now so a fast update is never lost between ticks.
+                frame = self.SPINNER[self._frame % len(self.SPINNER)]
+                self._draw(f"{frame} {text}")
+                return
+            self.active = True
+            self._stop.clear()
+            # Draw once immediately so even a fast request shows the line.
+            self._draw(f"{self.SPINNER[0]} {text}")
+            self._thread = threading.Thread(target=self._spin, daemon=True)
+            self._thread.start()
+
+    def bar_text(self, done, total, label="posts"):
+        """The text of a determinate bar, e.g. ``posts [####----] 24/120``."""
+        filled = min(self.BAR_WIDTH, int(self.BAR_WIDTH * done / max(total, 1)))
+        empty = self.BAR_WIDTH - filled
+        return f"{label} [{'#' * filled}{'-' * empty}] {done}/{total}"
+
+    def bar(self, done, total, label="posts"):
+        """Show a determinate bar (or a spinner when the total is unknown)."""
+        if not total:
+            self.start(f"loading {label}")
+            return
+        self.start(self.bar_text(done, total, label))
+
+    def _spin(self):
+        while not self._stop.wait(0.12):
+            with self._lock:
+                if not self.active:
+                    return
+                frame = self.SPINNER[self._frame % len(self.SPINNER)]
+                self._frame += 1
+                self._draw(f"{frame} {self.text}")
+
+    def _draw(self, line):
+        # Called with the lock held; pad over the previous, longer line.
+        pad = max(0, self._width - len(line))
+        try:
+            self.stream.write("\r" + line + " " * pad)
+            self.stream.flush()
+        except (OSError, ValueError):
+            return
+        self._width = len(line)
+
+    def stop(self):
+        """Erase the line; safe to call at any time."""
+        with self._lock:
+            if not self.active:
+                return
+            self.active = False
+            thread = self._thread
+        self._stop.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1)
+        with self._lock:
+            try:
+                self.stream.write("\r" + " " * self._width + "\r")
+                self.stream.flush()
+            except (OSError, ValueError):
+                pass
+            self._width = 0
+            self.text = ""
+
+
+_status = _Status()
+
+
+def set_progress(enabled):
+    """Turn the interactive progress line on or off (--debug turns it off)."""
+    _status.allowed = bool(enabled)
+    if not enabled:
+        _status.stop()
+
 
 useragent = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -105,8 +219,7 @@ PROFILE_QUERIES = (
 )
 PROFILE_DOC_IDS = tuple(doc_id for doc_id, _ in PROFILE_QUERIES)
 IPHONE_USER_AGENT = (
-    "Instagram 275.0.0.27.98 (iPhone14,5; iOS 17_4; en_US; en; scale=3.00; "
-    "1170x2532; 458229237)"
+    "Instagram 275.0.0.27.98 (iPhone14,5; iOS 17_4; en_US; en; scale=3.00; 1170x2532; 458229237)"
 )
 FEED_PAGE_SIZE = 12
 FEED_PAGE_DELAY = 1.0  # seconds between feed pages when walking the timeline
@@ -209,6 +322,7 @@ def _stdin_available():
 
 def _read_prompt(prompt):
     """Read one line, hidden on a real terminal and visible elsewhere."""
+    _status.stop()
     stream = sys.stdin
     if stream is not None and getattr(stream, "isatty", lambda: False)():
         return getpass.getpass(prompt)
@@ -590,10 +704,7 @@ def inspect_page(path):
     for index, script in enumerate(largest[:5], 1):
         text = script.get_text() or ""
         head = " ".join(text[:110].split())
-        print(
-            f"    script {index}: {len(text)} chars, type={script.get('type')}, "
-            f"starts: {head}"
-        )
+        print(f"    script {index}: {len(text)} chars, type={script.get('type')}, starts: {head}")
 
     print("    contexts:")
     seen = set()
@@ -602,7 +713,7 @@ def inspect_page(path):
         if index == -1 or key in seen:
             continue
         seen.add(key)
-        snippet = " ".join(html[max(0, index - 60):index + 140].split())
+        snippet = " ".join(html[max(0, index - 60) : index + 140].split())
         print(f"      {key} @ {index}: ...{snippet}...")
     return True
 
@@ -713,12 +824,8 @@ class main:
         self.force_login = login
         self.debug = debug
         self.save_cookies = save_cookies
-        self.session_file = (
-            Path(session_file).expanduser() if session_file else session_file_path()
-        )
-        self._stored_session = (
-            {} if self._provided_cookies else load_session(self.session_file)
-        )
+        self.session_file = Path(session_file).expanduser() if session_file else session_file_path()
+        self._stored_session = {} if self._provided_cookies else load_session(self.session_file)
         self.dump_page = Path(dump_page).expanduser() if dump_page else None
         self._last_status = None
         self._last_url = ""
@@ -737,19 +844,24 @@ class main:
         if self.debug:
             print(f"{cy}[debug]{nu} {message}")
 
-    @staticmethod
-    def _step(message):
-        """Print a numbered-free progress line so a failure can be located."""
-        if _quiet:
+    def _progress(self, text):
+        """Start or update the spinner; --debug shows the trace instead."""
+        if not self.debug:
+            _status.start(text)
+
+    def _progress_bar(self, done, total):
+        if not self.debug:
+            _status.bar(done, total)
+
+    def _step(self, message):
+        """Print a trace line; only with --debug (see -d)."""
+        if not self.debug or _quiet:
             return
+        _status.stop()
         print(f"{cy}[step]{nu} {message}")
 
     def _status_text(self):
-        return (
-            f"HTTP {self._last_status}"
-            if self._last_status is not None
-            else "no response"
-        )
+        return f"HTTP {self._last_status}" if self._last_status is not None else "no response"
 
     def _new_session(self, impersonate=None, proxy=None):
         """Build the HTTP session, impersonating Chrome when curl_cffi exists.
@@ -940,10 +1052,7 @@ class main:
             return
         self._set_cookies(self._provided_cookies)
         if not self.sessionid:
-            print(
-                f"\n{re}[!]{gr} the pasted cookies did not include a 'sessionid'; "
-                "ignoring them."
-            )
+            print(f"\n{re}[!]{gr} the pasted cookies did not include a 'sessionid'; ignoring them.")
             self._set_cookies({})
             return
         self._step("checking the sessionid with Instagram ...")
@@ -958,15 +1067,11 @@ class main:
             return
         print()
         if status == "invalid":
-            print(
-                f"{re}[!]{gr} the provided sessionid does not work ({detail}); "
-                "ignoring it."
-            )
+            print(f"{re}[!]{gr} the provided sessionid does not work ({detail}); ignoring it.")
             self._set_sessionid(None)
         else:
             print(
-                f"{re}[!]{gr} could not verify the provided sessionid ({detail}); "
-                "trying it anyway."
+                f"{re}[!]{gr} could not verify the provided sessionid ({detail}); trying it anyway."
             )
         print()
 
@@ -975,8 +1080,7 @@ class main:
         if not self._stored_session:
             return
         self._step(
-            f"saved session: {self.session_file} "
-            f"({', '.join(sorted(self._stored_session))})"
+            f"saved session: {self.session_file} ({', '.join(sorted(self._stored_session))})"
         )
         self._set_cookies(self._stored_session)
         self._step("checking the saved session with Instagram ...")
@@ -984,16 +1088,10 @@ class main:
         self._step(f"saved session check: {status} ({self._status_text()})")
         if status == "valid":
             self._session_verified = True
-            print(
-                f"\n{gr}[+]{nu} using the saved session{detail} "
-                f"({self.session_file})"
-            )
+            print(f"\n{gr}[+]{nu} using the saved session{detail} ({self.session_file})")
             return
         if status == "invalid":
-            print(
-                f"\n{re}[!]{gr} the saved session in {self.session_file} has expired "
-                f"({detail})."
-            )
+            print(f"\n{re}[!]{gr} the saved session in {self.session_file} has expired ({detail}).")
             self._set_cookies({})
             self._stored_session = {}
             if self.interactive:
@@ -1004,10 +1102,7 @@ class main:
             else:
                 self._explain_offline_login()
             return
-        print(
-            f"\n{re}[!]{gr} could not verify the saved session ({detail}); "
-            "using it anyway."
-        )
+        print(f"\n{re}[!]{gr} could not verify the saved session ({detail}); using it anyway.")
 
     def _save_session(self, cookies):
         if not self.save_cookies:
@@ -1024,9 +1119,7 @@ class main:
         if path:
             print(f"{gr}[+]{nu} saved session to {path}")
         elif cookies.get("sessionid"):
-            print(
-                f"{re}[!]{gr} could not save the session to {self.session_file}"
-            )
+            print(f"{re}[!]{gr} could not save the session to {self.session_file}")
 
     def _fetch_profile_with_login(self):
         """Fetch the profile, asking for a sessionid when Instagram demands one."""
@@ -1039,21 +1132,16 @@ class main:
                     # Retrying with another cookie will not help: Instagram is
                     # throttling or refusing this IP, not the session.
                     self._step(
-                        "login wall with a verified session -> not asking for "
-                        "another sessionid"
+                        "login wall with a verified session -> not asking for another sessionid"
                     )
                     raise InstagramError(str(exc)) from None
                 self._step("login required -> asking for a sessionid")
                 self._prompt_for_sessionid(exc)
             except RateLimitedError as exc:
-                if (
-                    not self.sessionid
-                    and self.interactive
-                    and self._prompts == 0
-                    and attempt == 0
-                ):
+                if not self.sessionid and self.interactive and self._prompts == 0 and attempt == 0:
                     # No session yet and Instagram is refusing the requests:
                     # let the user try an authenticated one before giving up.
+                    _status.stop()
                     self._step(
                         "every source was rate limited and no session is set "
                         "-> asking for a sessionid"
@@ -1072,9 +1160,9 @@ class main:
                     raise
                 attempt += 1
                 wait = exc.retry_after or self.retry_wait
+                _status.stop()
                 self._step(
-                    f"rate limited -> waiting {wait}s and retrying "
-                    f"({attempt}/{self.retries})"
+                    f"rate limited -> waiting {wait}s and retrying ({attempt}/{self.retries})"
                 )
                 print(
                     f"\n{re}[!]{nu} rate limited; retrying in {wait}s "
@@ -1086,10 +1174,7 @@ class main:
         """Ask for the csrftoken when the pasted value did not include one."""
         if cookies.get("csrftoken"):
             return cookies
-        prompt = (
-            f"{gr}csrftoken{nu} (optional, press Enter to fetch it "
-            "automatically): "
-        )
+        prompt = f"{gr}csrftoken{nu} (optional, press Enter to fetch it automatically): "
         try:
             value = _read_prompt(prompt)
         except (EOFError, KeyboardInterrupt):
@@ -1109,9 +1194,7 @@ class main:
 
         while True:
             try:
-                value = _read_prompt(
-                    f"{gr}sessionid{nu} (or the whole Cookie header): "
-                )
+                value = _read_prompt(f"{gr}sessionid{nu} (or the whole Cookie header): ")
             except (EOFError, KeyboardInterrupt):
                 print()
                 return False
@@ -1145,10 +1228,7 @@ class main:
                 self._session_verified = True
                 print(f"{gr}[+]{nu} sessionid works{detail}\n")
             else:
-                print(
-                    f"{re}[!]{gr} could not verify the sessionid ({detail}); "
-                    "trying it anyway.\n"
-                )
+                print(f"{re}[!]{gr} could not verify the sessionid ({detail}); trying it anyway.\n")
             self._save_session(cookies)
             return True
 
@@ -1184,23 +1264,16 @@ class main:
             if status != "invalid":
                 if status == "valid":
                     self._session_verified = True
-                    print(
-                        f"{gr}[+]{nu} already logged in{detail} "
-                        f"({self.session_file})"
-                    )
+                    print(f"{gr}[+]{nu} already logged in{detail} ({self.session_file})")
                 else:
                     print(
                         f"{re}[!]{gr} could not verify the saved session "
                         f"({detail}); keeping it anyway."
                     )
-                print(
-                    "    To replace it, run --forget-session and then "
-                    "--login again."
-                )
+                print("    To replace it, run --forget-session and then --login again.")
                 return
             print(
-                f"\n{re}[!]{gr} the saved session in {self.session_file} has "
-                f"expired ({detail}).\n"
+                f"\n{re}[!]{gr} the saved session in {self.session_file} has expired ({detail}).\n"
             )
             self._set_cookies({})
             self._stored_session = {}
@@ -1229,22 +1302,25 @@ class main:
             )
         if response.status_code in (401, 403) or "/accounts/login" in response.url:
             raise LoginRequiredError(
-                f"the {source} requires a logged-in session "
-                f"(HTTP {response.status_code})"
+                f"the {source} requires a logged-in session (HTTP {response.status_code})"
             )
         if response.status_code == 400:
             message = _response_message(response) or ""
             if "log" in message.lower():
                 raise LoginRequiredError(f"the {source} says: {message}")
             if message:
-                raise InstagramError(
-                    f"the {source} returned HTTP 400: {message}"
-                )
+                raise InstagramError(f"the {source} returned HTTP 400: {message}")
         if response.status_code >= 400:
             raise InstagramError(f"the {source} returned HTTP {response.status_code}")
 
     def _json_user(
-        self, url, source, params=None, mobile=False, headers=None, method="GET",
+        self,
+        url,
+        source,
+        params=None,
+        mobile=False,
+        headers=None,
+        method="GET",
         data=None,
     ):
         """Request a JSON endpoint and pull the user object out of the response."""
@@ -1253,9 +1329,7 @@ class main:
             method=method,
             params=params,
             data=data,
-            headers=(
-                headers if headers is not None else self._api_headers(mobile=mobile)
-            ),
+            headers=(headers if headers is not None else self._api_headers(mobile=mobile)),
         )
         try:
             self._check_status(response, source)
@@ -1271,9 +1345,7 @@ class main:
                     f"the {source} served a login wall instead of JSON"
                 ) from None
             if _looks_like_rate_limit(response.text):
-                raise RateLimitedError(
-                    f"the {source} is rate limiting this IP"
-                ) from None
+                raise RateLimitedError(f"the {source} is rate limiting this IP") from None
             raise InstagramError(f"the {source} returned non-JSON data") from None
 
         user = _dig(payload, "data", "user")
@@ -1296,9 +1368,7 @@ class main:
 
     def _fetch_from_api(self):
         """web_profile_info on the website host."""
-        return self._json_user(
-            WEB_PROFILE_INFO_URL, "profile API", params={"username": self.user}
-        )
+        return self._json_user(WEB_PROFILE_INFO_URL, "profile API", params={"username": self.user})
 
     def _fetch_from_mobile_api(self):
         """web_profile_info on the mobile host, with mobile app headers."""
@@ -1453,9 +1523,7 @@ class main:
 
     def _fetch_from_mobile_feed(self):
         """Rebuild the profile from the mobile app's user feed."""
-        profile = self._profile_from_feed(
-            self._mobile_feed_items(), "mobile user feed"
-        )
+        profile = self._profile_from_feed(self._mobile_feed_items(), "mobile user feed")
         self.data_source = "mobile user feed"
         return profile
 
@@ -1470,9 +1538,7 @@ class main:
             payload = response.json()
         except ValueError:
             if _looks_like_rate_limit(response.text):
-                raise RateLimitedError(
-                    f"the {source} is rate limiting this IP"
-                ) from None
+                raise RateLimitedError(f"the {source} is rate limiting this IP") from None
             raise InstagramError(f"the {source} returned non-JSON data") from None
         items = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(items, list):
@@ -1529,11 +1595,7 @@ class main:
                 continue
             for marker in ("window._sharedData", "window.__additionalDataLoaded"):
                 payload = _json_after_marker(text, marker)
-                user = (
-                    _find_user_payload(payload, self.user)
-                    if payload is not None
-                    else None
-                )
+                user = _find_user_payload(payload, self.user) if payload is not None else None
                 if user is not None:
                     return user
             if script.get("type") in ("application/json", "application/ld+json"):
@@ -1547,11 +1609,7 @@ class main:
             # Modern pages expose the profile under the xig_user_by_username key.
             if "xig_user_by_username" in text:
                 payload = _json_after_marker(text, '"xig_user_by_username"')
-                user = (
-                    _find_user_payload(payload, self.user)
-                    if payload is not None
-                    else None
-                )
+                user = _find_user_payload(payload, self.user) if payload is not None else None
                 if user is not None and (
                     str(user.get("username", "")).casefold() == self.user.casefold()
                 ):
@@ -1569,11 +1627,7 @@ class main:
                         payload = json.JSONDecoder().raw_decode(text[brace:])[0]
                     except ValueError:
                         payload = None
-                    user = (
-                        _find_user_payload(payload, self.user)
-                        if payload is not None
-                        else None
-                    )
+                    user = _find_user_payload(payload, self.user) if payload is not None else None
                     if user is not None:
                         return user
         return None
@@ -1590,12 +1644,8 @@ class main:
             "window._sharedData",
             "data-sjs",
         )
-        found = ", ".join(
-            f"{name}={'yes' if name in html else 'no'}" for name in markers
-        )
-        self._debug(
-            f"page has {html.count('<script')} script tags; markers: {found}"
-        )
+        found = ", ".join(f"{name}={'yes' if name in html else 'no'}" for name in markers)
+        self._debug(f"page has {html.count('<script')} script tags; markers: {found}")
 
     def _fetch_from_html(self):
         response = self._get(
@@ -1610,9 +1660,7 @@ class main:
             },
         )
         self._check_status(response, "profile page")
-        self._step(
-            f"profile page: {self._status_text()}, {len(response.text)} characters"
-        )
+        self._step(f"profile page: {self._status_text()}, {len(response.text)} characters")
         self._debug_markers(response.text)
         if self.dump_page:
             try:
@@ -1644,12 +1692,8 @@ class main:
                 "'wait a few minutes' page)"
             )
         if _looks_like_login(response.text):
-            raise LoginRequiredError(
-                "the profile page served a login wall instead of profile data"
-            )
-        raise InstagramError(
-            "the profile page did not contain embedded profile data"
-        )
+            raise LoginRequiredError("the profile page served a login wall instead of profile data")
+        raise InstagramError("the profile page did not contain embedded profile data")
 
     def _fetch_from_anonymous_page(self):
         """Read the profile from a logged-out page load, as a browser would."""
@@ -1672,14 +1716,11 @@ class main:
                 timeout=REQUEST_TIMEOUT,
             )
         except Exception as exc:
-            raise InstagramError(
-                f"could not reach the logged-out profile page: {exc}"
-            ) from exc
+            raise InstagramError(f"could not reach the logged-out profile page: {exc}") from exc
         self._last_status = getattr(response, "status_code", None)
         self._check_status(response, "logged-out profile page")
         self._step(
-            f"logged-out profile page: {self._status_text()}, "
-            f"{len(response.text)} characters"
+            f"logged-out profile page: {self._status_text()}, {len(response.text)} characters"
         )
         if self.dump_page:
             target = self.dump_page.with_name(
@@ -1693,9 +1734,7 @@ class main:
                 print(f"{re}[!]{gr} could not save the page HTML: {exc}")
         user = _embedded_profile(response.text, self.user)
         if user is None:
-            raise InstagramError(
-                "the logged-out profile page did not embed the profile"
-            )
+            raise InstagramError("the logged-out profile page did not embed the profile")
         self.data_source = "logged-out profile page"
         return user
 
@@ -1745,9 +1784,7 @@ class main:
                     f"{number}/{total} {label}: rate limited "
                     f"({self._status_text()}, {time.monotonic() - started:.1f}s)"
                 )
-                if rate_limit is None or (
-                    exc.retry_after or 0
-                ) > (rate_limit.retry_after or 0):
+                if rate_limit is None or (exc.retry_after or 0) > (rate_limit.retry_after or 0):
                     rate_limit = exc
                 continue
             except LoginRequiredError as exc:
@@ -1762,10 +1799,7 @@ class main:
             except InstagramError as exc:
                 problems.append(f"{label}: {exc}")
                 self._debug(f"{label}: {exc}")
-                self._step(
-                    f"{number}/{total} {label}: failed ({self._status_text()}) "
-                    f"-> {exc}"
-                )
+                self._step(f"{number}/{total} {label}: failed ({self._status_text()}) -> {exc}")
                 continue
             if user:
                 self._debug(f"{label}: ok")
@@ -1782,8 +1816,7 @@ class main:
                 if fallback is None:
                     fallback = (user, self.data_source, self.limited_data)
                 self._step(
-                    f"{number}/{total} {label}: partial profile, looking for "
-                    "a fuller one ..."
+                    f"{number}/{total} {label}: partial profile, looking for a fuller one ..."
                 )
                 self.limited_data = False
                 self.data_source = ""
@@ -1813,14 +1846,12 @@ class main:
             )
         if login_required:
             raise InstagramError(
-                message
-                + "\n    The sessionid was accepted, so this is not a login problem: "
+                message + "\n    The sessionid was accepted, so this is not a login problem: "
                 "Instagram is refusing these endpoints for this IP/account. "
                 "Wait a few minutes and try again."
             )
         raise InstagramError(
-            message + "\n    Instagram may be blocking this IP; wait a few minutes "
-            "and try again."
+            message + "\n    Instagram may be blocking this IP; wait a few minutes and try again."
         )
 
     def _rate_limit_hint(self, retry_after):
@@ -1837,16 +1868,11 @@ class main:
             )
         else:
             hint += " Logging in with a valid sessionid can also raise the limit."
-        hint += (
-            " If it keeps happening, use another network or pass "
-            "--proxy http://host:port."
-        )
+        hint += " If it keeps happening, use another network or pass --proxy http://host:port."
         return hint
 
     def _announce_transport(self):
-        backend = (
-            "curl_cffi (Chrome impersonation)" if self.impersonating else "requests"
-        )
+        backend = "curl_cffi (Chrome impersonation)" if self.impersonating else "requests"
         self._step(f"transport: {backend}")
         if self.impersonation_missing:
             print(
@@ -1856,11 +1882,7 @@ class main:
                 "'feedback_required' and 429s.\n"
                 "    Fix it with: pip install curl_cffi\n"
             )
-        if (
-            not self._provided_cookies
-            and not self._stored_session
-            and not self.force_login
-        ):
+        if not self._provided_cookies and not self._stored_session and not self.force_login:
             print(
                 f"\n{re}[!]{gr} no sessionid is set: Instagram will only expose the "
                 "public profile metadata (name, followers, following, posts).\n"
@@ -1872,7 +1894,6 @@ class main:
 
     def get_profile(self):
         started = time.monotonic()
-        extra.write(f"\n{gr}[+]{nu} getting profile ...\n")
         self._step(
             f"target: {self.user} | login: {self.force_login} | save session: "
             f"{self.save_cookies} | proxy: {'yes' if self.session.proxies else 'no'}"
@@ -1883,10 +1904,12 @@ class main:
             self._use_stored_session()
         if self.force_login:
             self.offer_login()
-        self._step(
-            "session: " + ("set" if self.sessionid else "none (public data only)")
-        )
-        self.p_data = self._fetch_profile_with_login()
+        self._step("session: " + ("set" if self.sessionid else "none (public data only)"))
+        self._progress(f"fetching @{self.user}")
+        try:
+            self.p_data = self._fetch_profile_with_login()
+        finally:
+            _status.stop()
         self._step(
             f"profile source: {self.data_source or 'unknown'} "
             f"({'full' if not self.limited_data else 'metadata only'})"
@@ -1901,9 +1924,7 @@ class main:
         """Derive the output, posts and tags from ``self.p_data``."""
         self.is_private = _as_bool(self.p_data.get("is_private"))
         self.profile_pic_url = (
-            self.p_data.get("profile_pic_url_hd")
-            or self.p_data.get("profile_pic_url")
-            or ""
+            self.p_data.get("profile_pic_url_hd") or self.p_data.get("profile_pic_url") or ""
         )
         self.posts = self._load_posts()
         if self.is_private and not self.posts:
@@ -1930,10 +1951,7 @@ class main:
             first = next((post for post in self.posts if post["caption"]), None)
             if first is not None:
                 self._debug(f"first caption: {first['caption'][:300]}")
-                self._debug(
-                    "hashtags in it: "
-                    f"{extra.extract_hash_tags(first['caption'])}"
-                )
+                self._debug(f"hashtags in it: {extra.extract_hash_tags(first['caption'])}")
         captions = sum(1 for post in self.posts if post["caption"])
         if self.tags:
             self._step(
@@ -1950,9 +1968,7 @@ class main:
                 hint = ""
             else:
                 hint = " (first page only; try --all-posts)"
-            self._step(
-                f"tags: none of the {captions} captions contain a hashtag{hint}"
-            )
+            self._step(f"tags: none of the {captions} captions contain a hashtag{hint}")
         return self.tags
 
     def to_dict(self):
@@ -1962,9 +1978,7 @@ class main:
             if key in profile:
                 profile[key] = _parse_count(profile[key])
         return {
-            "scraped_at": datetime.datetime.now()
-            .astimezone()
-            .isoformat(timespec="seconds"),
+            "scraped_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
             "username": self.user,
             "profile": profile,
             "posts": [dict(post) for post in self.posts],
@@ -1991,9 +2005,7 @@ class main:
         if posts is None:
             posts = len(self.posts)
 
-        external_url = p_data.get("external_url") or _dig(
-            p_data, "bio_links", 0, "url", default=""
-        )
+        external_url = p_data.get("external_url") or _dig(p_data, "bio_links", 0, "url", default="")
 
         return {
             "username": username,
@@ -2031,18 +2043,14 @@ class main:
     def _cap_posts(self, posts):
         """Stop at -m/--max-posts however the posts were loaded."""
         if self.max_posts and len(posts) > self.max_posts:
-            self._step(
-                f"posts: keeping the first {self.max_posts} of {len(posts)}"
-            )
+            self._step(f"posts: keeping the first {self.max_posts} of {len(posts)}")
             return posts[: self.max_posts]
         return posts
 
     def _load_posts(self):
         """Normalise the posts from the profile payload or the GraphQL feed."""
         self._step("posts: loading the first page ...")
-        edges = _dig(
-            self.p_data, "edge_owner_to_timeline_media", "edges", default=[]
-        )
+        edges = _dig(self.p_data, "edge_owner_to_timeline_media", "edges", default=[])
         if isinstance(edges, list) and edges:
             posts = [
                 self._normalize_post(edge["node"])
@@ -2073,11 +2081,7 @@ class main:
                     except InstagramError:
                         continue
                     return self._cap_posts(
-                        [
-                            self._normalize_post(item)
-                            for item in items
-                            if isinstance(item, dict)
-                        ]
+                        [self._normalize_post(item) for item in items if isinstance(item, dict)]
                     )
                 self.posts_error = str(exc)
                 self._step(f"posts: none available ({exc})")
@@ -2161,6 +2165,14 @@ class main:
         The two flags are independent: -m alone pages up to N posts, and with -a
         it caps the walk at N. Trimming happens in ``_cap_posts``.
         """
+        _status.start("loading posts")
+        try:
+            return self._walk_feed_edges()
+        finally:
+            _status.stop()
+
+    def _walk_feed_edges(self):
+        """The paging loop behind ``_fetch_all_feed_edges``."""
         edges = list(self._fetch_feed())
         target = self.max_posts
         if not self.all_posts and not target:
@@ -2170,10 +2182,12 @@ class main:
         expected = _first_value(self.p_data, "media_count") or _dig(
             self.p_data, "edge_owner_to_timeline_media", "count"
         )
+        total = target or expected or 0
+        if total > FEED_PAGE_SIZE:
+            self._progress_bar(len(edges), total)
         if target:
             self._step(
-                f"posts: collecting {target} posts, one request every "
-                f"{FEED_PAGE_DELAY:g}s ..."
+                f"posts: collecting {target} posts, one request every {FEED_PAGE_DELAY:g}s ..."
             )
         else:
             self._step(
@@ -2195,16 +2209,20 @@ class main:
             try:
                 new_edges, page_info = self._fetch_feed_page(after=cursor)
             except InstagramError as exc:
+                _status.stop()
                 self._step(f"posts: stopped after page {page - 1} ({exc})")
                 self.posts_error = str(exc)
                 break
             if not new_edges:
                 break
             edges.extend(new_edges)
+            if total:
+                self._progress_bar(len(edges), total)
             self._step(
                 f"posts: page {page} -> {len(edges)} posts"
                 + ("" if page_info.get("has_next_page") else " (last page)")
             )
+        _status.stop()
         if page > 1:
             self._step(f"posts: collected {len(edges)} posts in {page} pages")
         return edges
@@ -2218,9 +2236,7 @@ class main:
         if not picture:
             picture = node.get("display_url") or node.get("thumbnail_src") or ""
 
-        caption = _dig(
-            node, "edge_media_to_caption", "edges", 0, "node", "text", default=""
-        )
+        caption = _dig(node, "edge_media_to_caption", "edges", 0, "node", "text", default="")
         if not caption:
             raw_caption = node.get("caption")
             if isinstance(raw_caption, dict):
@@ -2259,11 +2275,13 @@ class main:
 
     def print_data_(self):
         """The default profile output; tags are only shown with -t."""
+        _status.stop()
         self._extracted_from_print_data_2()
         self._warn_limited_data()
         self._warn_posts_error()
 
     def print_data(self):
+        _status.stop()
         self._extracted_from_print_data_2()
         self._warn_limited_data()
 
@@ -2349,10 +2367,7 @@ class main:
             "follows it and the follow request was accepted.\n"
         )
         if not self.sessionid:
-            print(
-                f"    This run has no session: python3 main.py -u {self.user} "
-                "--login\n"
-            )
+            print(f"    This run has no session: python3 main.py -u {self.user} --login\n")
         elif not (self._stored_session or {}).get("csrftoken"):
             print(
                 "    Your saved session has no csrftoken. Run --login (or paste "
@@ -2382,6 +2397,7 @@ class main:
         os.chdir(path)
 
     def scrap_uploads(self):
+        _status.stop()
         if self.is_private and not self.posts:
             self._explain_private_profile()
             return 1
@@ -2404,6 +2420,7 @@ class main:
             print()
 
     def most_common_tags(self):
+        _status.stop()
         self._warn_posts_error()
         captions = sum(1 for post in self.posts if post["caption"])
         print(f"{gr}[+]{nu} user uploads tags : \n")
@@ -2449,10 +2466,7 @@ class main:
                         f.write(r.content)
                     print(f"{gr}[+]{nu} saved pic to {os.getcwd()}/profile_pic.jpg")
                 else:
-                    print(
-                        f"{re}[!]{gr} could not download profile picture: "
-                        f"HTTP {r.status_code}"
-                    )
+                    print(f"{re}[!]{gr} could not download profile picture: HTTP {r.status_code}")
 
         # SAVES PROFILE DATA TO TEXT FILE
         self.output_data = self._profile_details()
@@ -2463,11 +2477,7 @@ class main:
         # SAVES INFORMATION
         posts = {}
         for index, post in enumerate(self.posts):
-            entry = {
-                key: value
-                for key, value in post.items()
-                if key not in ("picture", "caption")
-            }
+            entry = {key: value for key, value in post.items() if key not in ("picture", "caption")}
             entry["picture"] = extra.tiny_url(post["picture"])
             if post["caption"]:
                 entry["caption"] = post["caption"]

@@ -40,9 +40,7 @@ USER = {
             {
                 "node": {
                     "edge_media_to_caption": {
-                        "edges": [
-                            {"node": {"text": "#python #osint post one #python"}}
-                        ]
+                        "edges": [{"node": {"text": "#python #osint post one #python"}}]
                     },
                     "thumbnail_resources": [{"src": "https://cdn.example/thumb1.jpg"}],
                     "edge_media_to_comment": {"count": 3},
@@ -60,9 +58,7 @@ USER = {
 
 
 class FakeResponse:
-    def __init__(
-        self, status_code=200, payload=None, text="", url="https://x/", headers=None
-    ):
+    def __init__(self, status_code=200, payload=None, text="", url="https://x/", headers=None):
         self.status_code = status_code
         self._payload = payload
         self.text = text
@@ -98,9 +94,10 @@ class BaseTestCase(unittest.TestCase):
     def make(self, user=USER, feed=None, **kwargs):
         kwargs.setdefault("interactive", False)
         kwargs.setdefault("session_file", self.session_path)
-        with mock.patch.object(
-            api.main, "_fetch_profile", return_value=dict(user)
-        ), mock.patch.object(api.main, "_fetch_feed", return_value=feed or []):
+        with (
+            mock.patch.object(api.main, "_fetch_profile", return_value=dict(user)),
+            mock.patch.object(api.main, "_fetch_feed", return_value=feed or []),
+        ):
             return self.new_main(user=kwargs.pop("username", "prottoy.raha.r"), **kwargs)
 
 
@@ -120,17 +117,13 @@ class ProfileTests(BaseTestCase):
         self.assertEqual(ig.tags, {})
 
     PRIVATE_USER = {
-        key: value
-        for key, value in USER.items()
-        if key != "edge_owner_to_timeline_media"
+        key: value for key, value in USER.items() if key != "edge_owner_to_timeline_media"
     }
 
     def test_private_profile_without_posts_explains_itself(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            ig = self.make(
-                dict(self.PRIVATE_USER, is_private=True), username="secret"
-            )
+            ig = self.make(dict(self.PRIVATE_USER, is_private=True), username="secret")
             self.assertEqual(ig.tags, {})
             self.assertEqual(ig.scrap_uploads(), 1)
         text = out.getvalue()
@@ -153,20 +146,19 @@ class ProfileTests(BaseTestCase):
     def test_private_message_mentions_the_session_when_missing(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            self.make(
-                dict(self.PRIVATE_USER, is_private=True), username="secret"
-            )
+            self.make(dict(self.PRIVATE_USER, is_private=True), username="secret")
         self.assertIn("--login", out.getvalue())
 
     def test_private_message_mentions_the_full_cookie_header(self):
         api.save_session({"sessionid": "only"}, self.session_path)
         out = io.StringIO()
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", " (logged in as @x)")
-        ), contextlib.redirect_stdout(out):
-            self.make(
-                dict(self.PRIVATE_USER, is_private=True), username="secret"
-            )
+        with (
+            mock.patch.object(
+                api.main, "_session_status", return_value=("valid", " (logged in as @x)")
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            self.make(dict(self.PRIVATE_USER, is_private=True), username="secret")
         self.assertIn("whole Cookie header", out.getvalue())
 
     def test_extract_hash_tags_is_case_insensitive_and_strips_punctuation(self):
@@ -223,11 +215,17 @@ class ProfileTests(BaseTestCase):
         self.assertIn("osint", text)
         self.assertNotIn("no hashtags were found", text)
 
-    def test_tag_summary_step_is_printed(self):
+    def test_tag_summary_step_is_printed_with_debug(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.make(MODERN_USER, feed=MODERN_FEED, debug=True)
+        self.assertIn("tags: 3 hashtags in 1 captions", out.getvalue())
+
+    def test_no_step_trace_without_debug(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.make(MODERN_USER, feed=MODERN_FEED)
-        self.assertIn("tags: 3 hashtags in 1 captions", out.getvalue())
+        self.assertNotIn("[step]", ANSI.sub("", out.getvalue()))
 
     def test_save_data(self):
         ig = self.make()
@@ -287,30 +285,18 @@ def modern_html(user=MODERN_USER):
                 "ScheduledServerJS",
                 "handle",
                 None,
-                [
-                    {
-                        "__bbox": {
-                            "result": {
-                                "data": {"xig_user_by_username": user}
-                            }
-                        }
-                    }
-                ],
+                [{"__bbox": {"result": {"data": {"xig_user_by_username": user}}}}],
             ]
         ]
     }
     return (
-        '<html><script type="application/json" data-sjs>'
-        + json.dumps(payload)
-        + "</script></html>"
+        '<html><script type="application/json" data-sjs>' + json.dumps(payload) + "</script></html>"
     )
 
 
 class ModernProfileTests(BaseTestCase):
     def test_html_data_sjs_payload(self):
-        with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(text=modern_html())
-        ):
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=modern_html())):
             user = self.make()._fetch_from_html()
         self.assertEqual(user["username"], MODERN_USER["username"])
         self.assertEqual(user["follower_count"], 321)
@@ -334,10 +320,11 @@ class ModernProfileTests(BaseTestCase):
         self.assertEqual(ig.posts[1]["caption"], "")
 
     def test_feed_failure_is_reported_but_profile_survives(self):
-        with mock.patch.object(
-            api.main, "_fetch_profile", return_value=dict(MODERN_USER)
-        ), mock.patch.object(
-            api.main, "_fetch_feed", side_effect=api.InstagramError("feed blocked")
+        with (
+            mock.patch.object(api.main, "_fetch_profile", return_value=dict(MODERN_USER)),
+            mock.patch.object(
+                api.main, "_fetch_feed", side_effect=api.InstagramError("feed blocked")
+            ),
         ):
             ig = self.new_main(user="prottoy.raha.r")
         self.assertEqual(ig.output["followers"], "321")
@@ -348,9 +335,7 @@ class ModernProfileTests(BaseTestCase):
         response = FakeResponse(
             payload={
                 "data": {
-                    "xdt_api__v1__feed__user_timeline_graphql_connection": {
-                        "edges": MODERN_FEED
-                    }
+                    "xdt_api__v1__feed__user_timeline_graphql_connection": {"edges": MODERN_FEED}
                 }
             }
         )
@@ -359,27 +344,37 @@ class ModernProfileTests(BaseTestCase):
         self.assertEqual(edges, MODERN_FEED)
 
     def page(self, nodes, has_next, cursor=None):
-        return FakeResponse(payload={"data": {
-            "xdt_api__v1__feed__user_timeline_graphql_connection": {
-                "edges": [{"node": node} for node in nodes],
-                "page_info": {"has_next_page": has_next, "end_cursor": cursor},
+        return FakeResponse(
+            payload={
+                "data": {
+                    "xdt_api__v1__feed__user_timeline_graphql_connection": {
+                        "edges": [{"node": node} for node in nodes],
+                        "page_info": {"has_next_page": has_next, "end_cursor": cursor},
+                    }
+                }
             }
-        }})
+        )
 
     def feed_get(self, pages):
         """A fake _get that only answers the feed doc_id, page by page."""
+
         def fake_get(url, **kwargs):
             params = kwargs.get("params") or {}
             if params.get("doc_id") != api.FEED_DOC_ID:
                 return FakeResponse(payload={"data": {"user": dict(MODERN_USER)}})
             after = json.loads(params["variables"])["after"]
             edges, has_next, cursor = pages[after]
-            return FakeResponse(payload={"data": {
-                "xdt_api__v1__feed__user_timeline_graphql_connection": {
-                    "edges": [{"node": node} for node in edges],
-                    "page_info": {"has_next_page": has_next, "end_cursor": cursor},
+            return FakeResponse(
+                payload={
+                    "data": {
+                        "xdt_api__v1__feed__user_timeline_graphql_connection": {
+                            "edges": [{"node": node} for node in edges],
+                            "page_info": {"has_next_page": has_next, "end_cursor": cursor},
+                        }
+                    }
                 }
-            }})
+            )
+
         return fake_get
 
     def run_with(self, pages, **kwargs):
@@ -392,9 +387,10 @@ class ModernProfileTests(BaseTestCase):
                 calls.append(json.loads(params["variables"])["after"])
             return fake(url, **kw)
 
-        with mock.patch.object(
-            api.main, "_get", side_effect=recording_get
-        ), mock.patch.object(api, "FEED_PAGE_DELAY", 0):
+        with (
+            mock.patch.object(api.main, "_get", side_effect=recording_get),
+            mock.patch.object(api, "FEED_PAGE_DELAY", 0),
+        ):
             ig = self.new_main(user="prottoy.raha.r", **kwargs)
         return ig, calls
 
@@ -472,17 +468,22 @@ class ModernProfileTests(BaseTestCase):
                 return FakeResponse(payload={"data": {"user": dict(MODERN_USER)}})
             after = json.loads(params["variables"])["after"]
             if after is None:
-                return FakeResponse(payload={"data": {
-                    "xdt_api__v1__feed__user_timeline_graphql_connection": {
-                        "edges": [{"node": {"code": "a"}}],
-                        "page_info": {"has_next_page": True, "end_cursor": "C1"},
+                return FakeResponse(
+                    payload={
+                        "data": {
+                            "xdt_api__v1__feed__user_timeline_graphql_connection": {
+                                "edges": [{"node": {"code": "a"}}],
+                                "page_info": {"has_next_page": True, "end_cursor": "C1"},
+                            }
+                        }
                     }
-                }})
+                )
             return FakeResponse(status_code=429)
 
-        with mock.patch.object(
-            api.main, "_get", side_effect=fake_get
-        ), mock.patch.object(api, "FEED_PAGE_DELAY", 0):
+        with (
+            mock.patch.object(api.main, "_get", side_effect=fake_get),
+            mock.patch.object(api, "FEED_PAGE_DELAY", 0),
+        ):
             ig = self.new_main(user="prottoy.raha.r", all_posts=True)
         self.assertEqual(len(ig.posts), 1)
         self.assertTrue(ig.posts_error)
@@ -503,21 +504,15 @@ class FetchTests(BaseTestCase):
     def test_api_success(self):
         response = FakeResponse(payload={"data": {"user": USER}})
         with mock.patch.object(api.main, "_get", return_value=response):
-            self.assertEqual(
-                self.make()._fetch_from_api()["username"], USER["username"]
-            )
+            self.assertEqual(self.make()._fetch_from_api()["username"], USER["username"])
 
     def test_api_404(self):
-        with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(status_code=404)
-        ):
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(status_code=404)):
             with self.assertRaisesRegex(api.InstagramError, "404"):
                 self.make()._fetch_from_api()
 
     def test_api_400_reports_instagram_message(self):
-        response = FakeResponse(
-            status_code=400, payload={"message": "invalid parameters"}
-        )
+        response = FakeResponse(status_code=400, payload={"message": "invalid parameters"})
         with mock.patch.object(api.main, "_get", return_value=response):
             with self.assertRaisesRegex(api.InstagramError, "invalid parameters"):
                 self.make()._fetch_from_api()
@@ -540,15 +535,11 @@ class FetchTests(BaseTestCase):
         html = (
             "<html><script type='text/javascript'>"
             "window._sharedData = "
-            + json.dumps(
-                {"entry_data": {"ProfilePage": [{"graphql": {"user": USER}}]}}
-            )
+            + json.dumps({"entry_data": {"ProfilePage": [{"graphql": {"user": USER}}]}})
             + ";</script></html>"
         )
         with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=html)):
-            self.assertEqual(
-                self.make()._fetch_from_html()["username"], USER["username"]
-            )
+            self.assertEqual(self.make()._fetch_from_html()["username"], USER["username"])
 
     def test_html_prefers_requested_user(self):
         other = dict(USER, username="someone_else")
@@ -559,9 +550,7 @@ class FetchTests(BaseTestCase):
             + "}]]};</script>"
         )
         with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=html)):
-            self.assertEqual(
-                self.make()._fetch_from_html()["username"], USER["username"]
-            )
+            self.assertEqual(self.make()._fetch_from_html()["username"], USER["username"])
 
     def test_html_without_data(self):
         with mock.patch.object(
@@ -573,9 +562,7 @@ class FetchTests(BaseTestCase):
     def test_falls_back_to_html(self):
         html = (
             "<script>window._sharedData = "
-            + json.dumps(
-                {"entry_data": {"ProfilePage": [{"graphql": {"user": USER}}]}}
-            )
+            + json.dumps({"entry_data": {"ProfilePage": [{"graphql": {"user": USER}}]}})
             + ";</script>"
         )
 
@@ -598,9 +585,7 @@ class FetchTests(BaseTestCase):
                 self.new_main(user="prottoy.raha.r")
 
     def test_explicit_sessionid_is_used(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ):
+        with mock.patch.object(api.main, "_session_status", return_value=("valid", "")):
             ig = self.make(sessionid="abc123")
         cookies = ig.session.cookies.get_dict()
         self.assertEqual(cookies.get("sessionid"), "abc123")
@@ -608,9 +593,7 @@ class FetchTests(BaseTestCase):
 
 class LoginPromptTests(BaseTestCase):
     def test_401_raises_login_required(self):
-        with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(status_code=401)
-        ):
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(status_code=401)):
             with self.assertRaises(api.LoginRequiredError):
                 self.make()._fetch_from_api()
 
@@ -638,15 +621,11 @@ class LoginPromptTests(BaseTestCase):
                 raise api.LoginRequiredError("login")
             return dict(USER)
 
-        statuses = iter(
-            [("invalid", "HTTP 401"), ("valid", " (logged in as @demo)")]
-        )
-        with mock.patch.object(
-            api.main, "_fetch_profile", side_effect=fetch
-        ), mock.patch.object(
-            api.main, "_session_status", side_effect=lambda: next(statuses)
-        ), mock.patch(
-            "api.api._read_prompt", side_effect=["wrong", "right", ""]
+        statuses = iter([("invalid", "HTTP 401"), ("valid", " (logged in as @demo)")])
+        with (
+            mock.patch.object(api.main, "_fetch_profile", side_effect=fetch),
+            mock.patch.object(api.main, "_session_status", side_effect=lambda: next(statuses)),
+            mock.patch("api.api._read_prompt", side_effect=["wrong", "right", ""]),
         ):
             ig = self.new_main(user="prottoy.raha.r", interactive=True)
 
@@ -655,30 +634,34 @@ class LoginPromptTests(BaseTestCase):
         self.assertEqual(len(fetches), 2)
 
     def test_prompt_is_not_used_when_not_interactive(self):
-        with mock.patch.object(
-            api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
-        ), mock.patch("api.api._read_prompt") as getpass_mock:
+        with (
+            mock.patch.object(
+                api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
+            ),
+            mock.patch("api.api._read_prompt") as getpass_mock,
+        ):
             with self.assertRaises(api.LoginRequiredError):
                 self.new_main(user="prottoy.raha.r", interactive=False)
         getpass_mock.assert_not_called()
 
     def test_empty_input_cancels(self):
-        with mock.patch.object(
-            api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
-        ), mock.patch(
-            "api.api._read_prompt", side_effect=["   "]
-        ), mock.patch.object(
-            api.main, "_session_status"
-        ) as status:
+        with (
+            mock.patch.object(
+                api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
+            ),
+            mock.patch("api.api._read_prompt", side_effect=["   "]),
+            mock.patch.object(api.main, "_session_status") as status,
+        ):
             with self.assertRaises(api.LoginRequiredError):
                 self.new_main(user="prottoy.raha.r", interactive=True)
         status.assert_not_called()
 
     def test_ctrl_c_cancels(self):
-        with mock.patch.object(
-            api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
-        ), mock.patch(
-            "api.api._read_prompt", side_effect=KeyboardInterrupt
+        with (
+            mock.patch.object(
+                api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
+            ),
+            mock.patch("api.api._read_prompt", side_effect=KeyboardInterrupt),
         ):
             with self.assertRaises(api.LoginRequiredError):
                 self.new_main(user="prottoy.raha.r", interactive=True)
@@ -692,27 +675,23 @@ class LoginPromptTests(BaseTestCase):
                 raise api.LoginRequiredError("login")
             return dict(USER)
 
-        with mock.patch.object(
-            api.main, "_fetch_profile", side_effect=fetch
-        ), mock.patch.object(
-            api.main, "_session_status", return_value=("unknown", "timed out")
-        ), mock.patch("api.api._read_prompt", side_effect=["maybe", ""]):
+        with (
+            mock.patch.object(api.main, "_fetch_profile", side_effect=fetch),
+            mock.patch.object(api.main, "_session_status", return_value=("unknown", "timed out")),
+            mock.patch("api.api._read_prompt", side_effect=["maybe", ""]),
+        ):
             ig = self.new_main(user="prottoy.raha.r", interactive=True)
         self.assertEqual(ig.output["followers"], "120")
         self.assertEqual(len(fetches), 2)
 
     def test_invalid_provided_session_is_dropped(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("invalid", "HTTP 401")
-        ):
+        with mock.patch.object(api.main, "_session_status", return_value=("invalid", "HTTP 401")):
             ig = self.make(sessionid="stale")
         self.assertEqual(ig.sessionid, "")
         self.assertEqual(ig.session.cookies.get_dict(), {})
 
     def test_cookie_header_paste_is_understood(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ):
+        with mock.patch.object(api.main, "_session_status", return_value=("valid", "")):
             ig = self.make(sessionid="csrftoken=x; sessionid=abc123; ds_user_id=9")
         self.assertEqual(ig.sessionid, "abc123")
 
@@ -728,14 +707,10 @@ class LoginPromptTests(BaseTestCase):
     def test_session_status_valid_from_web_form_data(self):
         response = FakeResponse(payload={"form_data": {"username": "me"}})
         with mock.patch.object(api.main, "_get", return_value=response):
-            self.assertEqual(
-                self.make()._session_status(), ("valid", " (logged in as @me)")
-            )
+            self.assertEqual(self.make()._session_status(), ("valid", " (logged in as @me)"))
 
     def test_session_status_invalid_on_401(self):
-        with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(status_code=401)
-        ):
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(status_code=401)):
             self.assertEqual(self.make()._session_status()[0], "invalid")
 
     def test_session_status_invalid_on_login_page(self):
@@ -744,12 +719,8 @@ class LoginPromptTests(BaseTestCase):
             self.assertEqual(self.make()._session_status()[0], "invalid")
 
     def test_session_status_unknown_when_unreachable(self):
-        with mock.patch.object(
-            api.main, "_get", side_effect=api.InstagramError("no network")
-        ):
-            self.assertEqual(
-                self.make()._session_status(), ("unknown", "no network")
-            )
+        with mock.patch.object(api.main, "_get", side_effect=api.InstagramError("no network")):
+            self.assertEqual(self.make()._session_status(), ("unknown", "no network"))
 
     def test_session_status_falls_back_to_profile_check(self):
         def fake_get(url, **kwargs):
@@ -762,7 +733,7 @@ class LoginPromptTests(BaseTestCase):
 
 
 META_HTML = (
-    '<html><head>'
+    "<html><head>"
     '<meta property="og:title" '
     'content="Thess B (@_thessb17_) • Instagram photos" />'
     '<meta property="og:description" content="1,234 Followers, 56 Following, '
@@ -778,9 +749,10 @@ class SavedSessionTests(BaseTestCase):
 
     def test_saved_session_is_reused_without_prompting(self):
         api.save_session({"sessionid": "saved", "csrftoken": "c"}, self.path())
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", " (as @me)")
-        ), mock.patch("api.api._read_prompt") as prompter:
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("valid", " (as @me)")),
+            mock.patch("api.api._read_prompt") as prompter,
+        ):
             ig = self.make()
         prompter.assert_not_called()
         self.assertEqual(ig.sessionid, "saved")
@@ -789,11 +761,12 @@ class SavedSessionTests(BaseTestCase):
     def test_expired_saved_session_prompts_and_saves_again(self):
         api.save_session({"sessionid": "old", "csrftoken": "c"}, self.path())
         statuses = iter([("invalid", "HTTP 401"), ("valid", "")])
-        with mock.patch.object(
-            api.main, "_session_status", side_effect=lambda: next(statuses)
-        ), mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=fresh", "newcsrf"]
-        ) as prompter:
+        with (
+            mock.patch.object(api.main, "_session_status", side_effect=lambda: next(statuses)),
+            mock.patch(
+                "api.api._read_prompt", side_effect=["sessionid=fresh", "newcsrf"]
+            ) as prompter,
+        ):
             ig = self.make(interactive=True)
         self.assertEqual(ig.sessionid, "fresh")
         stored = api.load_session(self.path())
@@ -802,9 +775,10 @@ class SavedSessionTests(BaseTestCase):
         self.assertEqual(prompter.call_count, 2)  # sessionid + csrftoken
 
     def test_cookies_set_by_instagram_are_saved_too(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch("api.api._read_prompt", side_effect=["sid", ""]):
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("valid", "")),
+            mock.patch("api.api._read_prompt", side_effect=["sid", ""]),
+        ):
             ig = self.make(interactive=True, login=True)
             ig.session.cookies.set("mid", "auto-mid", domain=".instagram.com")
             ig.session.cookies.set("csrftoken", "auto-csrf", domain=".instagram.com")
@@ -814,18 +788,20 @@ class SavedSessionTests(BaseTestCase):
         self.assertEqual(stored["csrftoken"], "auto-csrf")
 
     def test_no_question_about_unused_cookies(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch("api.api._read_prompt", side_effect=["sid", ""]) as prompter:
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("valid", "")),
+            mock.patch("api.api._read_prompt", side_effect=["sid", ""]) as prompter,
+        ):
             self.make(interactive=True, login=True)
         asked = " ".join(call.args[0] for call in prompter.call_args_list)
         self.assertNotIn("ds_user_id", asked)
         self.assertNotIn("mid", asked)
 
     def test_prompt_saves_sessionid_and_csrftoken(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch("api.api._read_prompt", side_effect=["sid-value", "csrf-value"]):
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("valid", "")),
+            mock.patch("api.api._read_prompt", side_effect=["sid-value", "csrf-value"]),
+        ):
             self.make(interactive=True, login=True)
         stored = api.load_session(self.path())
         self.assertEqual(stored["sessionid"], "sid-value")
@@ -834,17 +810,16 @@ class SavedSessionTests(BaseTestCase):
         self.assertEqual(mode, 0o600)
 
     def test_no_save_flag_keeps_disk_clean(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch("api.api._read_prompt", side_effect=["sid", ""]):
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("valid", "")),
+            mock.patch("api.api._read_prompt", side_effect=["sid", ""]),
+        ):
             self.make(interactive=True, save_cookies=False)
         self.assertEqual(api.load_session(self.path()), {})
 
     def test_explicit_cookies_override_the_saved_session(self):
         api.save_session({"sessionid": "stored"}, self.path())
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ):
+        with mock.patch.object(api.main, "_session_status", return_value=("valid", "")):
             ig = self.make(sessionid="sessionid=explicit")
         self.assertEqual(ig.sessionid, "explicit")
         self.assertEqual(api.load_session(self.path())["sessionid"], "explicit")
@@ -852,9 +827,10 @@ class SavedSessionTests(BaseTestCase):
     def test_corrupt_file_is_ignored(self):
         with open(self.path(), "w") as handle:
             handle.write("{not json")
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch("api.api._read_prompt", side_effect=["fresh", ""]):
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("valid", "")),
+            mock.patch("api.api._read_prompt", side_effect=["fresh", ""]),
+        ):
             ig = self.make(interactive=True, login=True)
         self.assertEqual(ig.sessionid, "fresh")
 
@@ -867,14 +843,13 @@ class SavedSessionTests(BaseTestCase):
 
     def test_session_file_path_defaults_under_home(self):
         with mock.patch.object(api.Path, "home", return_value=api.Path("/tmp/home")):
-            self.assertEqual(
-                str(api.session_file_path()), "/tmp/home/.config/SoIG/session.json"
-            )
+            self.assertEqual(str(api.session_file_path()), "/tmp/home/.config/SoIG/session.json")
 
     def test_custom_session_file_is_used(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch("api.api._read_prompt", side_effect=["sid", ""]):
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("valid", "")),
+            mock.patch("api.api._read_prompt", side_effect=["sid", ""]),
+        ):
             self.make(interactive=True, login=True, session_file="/tmp/other.json")
         # nothing written to the default location
         self.assertEqual(api.load_session(self.path()), {})
@@ -885,11 +860,12 @@ class LoginOnlyTests(BaseTestCase):
 
     def test_a_valid_stored_session_is_reported_without_prompting(self):
         api.save_session({"sessionid": "saved", "csrftoken": "c"}, self.session_path)
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", " (as @me)")
-        ), mock.patch.object(api.main, "_fetch_profile") as fetch, mock.patch(
-            "api.api._read_prompt"
-        ) as prompter, contextlib.redirect_stdout(io.StringIO()) as out:
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("valid", " (as @me)")),
+            mock.patch.object(api.main, "_fetch_profile") as fetch,
+            mock.patch("api.api._read_prompt") as prompter,
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
             ig = api.main(
                 interactive=True,
                 session_file=self.session_path,
@@ -903,10 +879,10 @@ class LoginOnlyTests(BaseTestCase):
     def test_an_expired_stored_session_is_replaced(self):
         api.save_session({"sessionid": "old", "csrftoken": "c"}, self.session_path)
         statuses = iter([("invalid", "HTTP 401"), ("valid", "")])
-        with mock.patch.object(
-            api.main, "_session_status", side_effect=lambda: next(statuses)
-        ), mock.patch.object(api.main, "_fetch_profile") as fetch, mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=fresh", "newcsrf"]
+        with (
+            mock.patch.object(api.main, "_session_status", side_effect=lambda: next(statuses)),
+            mock.patch.object(api.main, "_fetch_profile") as fetch,
+            mock.patch("api.api._read_prompt", side_effect=["sessionid=fresh", "newcsrf"]),
         ):
             api.main(
                 interactive=True,
@@ -919,13 +895,17 @@ class LoginOnlyTests(BaseTestCase):
         self.assertEqual(stored["csrftoken"], "newcsrf")
 
     def test_without_a_session_the_login_test_raises(self):
-        with mock.patch("api.api._read_prompt", side_effect=EOFError),                 contextlib.redirect_stdout(io.StringIO()):
+        with (
+            mock.patch("api.api._read_prompt", side_effect=EOFError),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             with self.assertRaises(api.InstagramError):
                 api.main(
                     interactive=True,
                     session_file=self.session_path,
                     login_only=True,
                 )
+
 
 class SessionNoticeTests(BaseTestCase):
     def test_warns_when_no_session_is_set(self):
@@ -938,9 +918,10 @@ class SessionNoticeTests(BaseTestCase):
 
     def test_no_warning_when_sessionid_supplied(self):
         out = io.StringIO()
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ), contextlib.redirect_stdout(out):
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("valid", "")),
+            contextlib.redirect_stdout(out),
+        ):
             self.make(sessionid="good")
         self.assertNotIn("no sessionid is set", out.getvalue())
 
@@ -949,9 +930,10 @@ class SessionNoticeTests(BaseTestCase):
             return FakeResponse(status_code=429)
 
         out = io.StringIO()
-        with mock.patch.object(
-            api.main, "_get", side_effect=fake_get
-        ), contextlib.redirect_stdout(out):
+        with (
+            mock.patch.object(api.main, "_get", side_effect=fake_get),
+            contextlib.redirect_stdout(out),
+        ):
             with self.assertRaises(api.InstagramError):
                 self.new_main(user="prottoy.raha.r", interactive=False, debug=True)
         text = out.getvalue()
@@ -960,9 +942,9 @@ class SessionNoticeTests(BaseTestCase):
 
 
 class UpgradeTests(BaseTestCase):
-
     def meta_only(self, **kwargs):
         """A run whose only working source is the OpenGraph metadata."""
+
         def fake_get(url, **kwargs):
             if url == api.PROFILE_URL.format(username="_thessb17_"):
                 return FakeResponse(text=META_HTML)
@@ -972,12 +954,13 @@ class UpgradeTests(BaseTestCase):
             return self.new_main(user="_thessb17_", **kwargs)
 
     def test_offers_login_when_only_metadata_is_available(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", " (as @me)")
-        ), mock.patch(
-            "api.api._read_prompt",
-            side_effect=["sessionid=good; csrftoken=x"],
-        ) as prompter:
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("valid", " (as @me)")),
+            mock.patch(
+                "api.api._read_prompt",
+                side_effect=["sessionid=good; csrftoken=x"],
+            ) as prompter,
+        ):
             ig = self.meta_only(interactive=True)
         self.assertEqual(prompter.call_count, 1)  # whole header, no follow-ups
         self.assertTrue(ig._session_verified)
@@ -996,7 +979,9 @@ class UpgradeTests(BaseTestCase):
                 return FakeResponse(text=META_HTML)
             if url == api.WEB_PROFILE_INFO_URL:
                 if "sessionid=good" in str(getattr(api.main, "_cookies", "")):
-                    return FakeResponse(payload={"data": {"user": dict(USER, username="_thessb17_")}})
+                    return FakeResponse(
+                        payload={"data": {"user": dict(USER, username="_thessb17_")}}
+                    )
                 return FakeResponse(status_code=429)
             return FakeResponse(status_code=429)
 
@@ -1009,17 +994,14 @@ class UpgradeTests(BaseTestCase):
 
         def fake_get_bound(instance, url, **kwargs):
             if url == api.WEB_PROFILE_INFO_URL and state["logged_in"]:
-                return FakeResponse(
-                    payload={"data": {"user": dict(USER, username="_thessb17_")}}
-                )
+                return FakeResponse(payload={"data": {"user": dict(USER, username="_thessb17_")}})
             return fake_get(url, **kwargs)
 
-        with mock.patch.object(api.main, "_get", fake_get_bound), mock.patch.object(
-            api.main, "_set_cookies", set_cookies
-        ), mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=good", ""]
+        with (
+            mock.patch.object(api.main, "_get", fake_get_bound),
+            mock.patch.object(api.main, "_set_cookies", set_cookies),
+            mock.patch.object(api.main, "_session_status", return_value=("valid", "")),
+            mock.patch("api.api._read_prompt", side_effect=["sessionid=good", ""]),
         ):
             ig = self.new_main(user="_thessb17_", interactive=True)
         self.assertFalse(ig.limited_data)
@@ -1033,11 +1015,10 @@ class UpgradeTests(BaseTestCase):
         self.assertTrue(ig.limited_data)
 
     def test_force_login_prompts_up_front(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=good", "csrf"]
-        ) as prompter:
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("valid", "")),
+            mock.patch("api.api._read_prompt", side_effect=["sessionid=good", "csrf"]) as prompter,
+        ):
             ig = self.make(login=True, interactive=True)
         self.assertEqual(prompter.call_count, 2)  # sessionid + csrftoken
         self.assertTrue(ig._session_verified)
@@ -1053,29 +1034,32 @@ class UserInfoSourceTests(BaseTestCase):
     def test_user_id_falls_back_to_the_feed(self):
         feed = [{"node": {"user": {"pk": 999, "username": "prottoy.raha.r"}}}]
         ig = self.make()
-        with mock.patch.object(
-            api.main, "_fetch_feed", return_value=feed
-        ), mock.patch.object(
-            api.main, "_fetch_from_username_info",
-            side_effect=api.InstagramError("400"),
-        ), mock.patch.object(
-            api.main, "_fetch_from_mobile_username_info",
-            side_effect=api.InstagramError("400"),
+        with (
+            mock.patch.object(api.main, "_fetch_feed", return_value=feed),
+            mock.patch.object(
+                api.main,
+                "_fetch_from_username_info",
+                side_effect=api.InstagramError("400"),
+            ),
+            mock.patch.object(
+                api.main,
+                "_fetch_from_mobile_username_info",
+                side_effect=api.InstagramError("400"),
+            ),
         ):
             self.assertEqual(ig._resolve_user_id(), "999")
 
     def test_user_info_uses_the_resolved_id(self):
         def fake_get(url, **kwargs):
             if "/users/12345/info/" in url:
-                return FakeResponse(
-                    payload={"user": dict(USER, biography="from info")}
-                )
+                return FakeResponse(payload={"user": dict(USER, biography="from info")})
             return FakeResponse(status_code=400, payload={"message": "nope"})
 
         ig = self.make()
-        with mock.patch.object(
-            api.main, "_resolve_user_id", return_value="12345"
-        ), mock.patch.object(api.main, "_get", side_effect=fake_get):
+        with (
+            mock.patch.object(api.main, "_resolve_user_id", return_value="12345"),
+            mock.patch.object(api.main, "_get", side_effect=fake_get),
+        ):
             user = ig._fetch_from_user_info()
         self.assertEqual(user["biography"], "from info")
 
@@ -1089,18 +1073,14 @@ class PageDumpTests(BaseTestCase):
     def test_dump_page_writes_the_html(self):
         path = os.path.join(self.tmp.name, "page.html")
         html = MetadataFallbackTests.META_HTML
-        with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(text=html)
-        ):
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=html)):
             self.new_main(user="_thessb17_", interactive=False, dump_page=path)
         with open(path, encoding="utf-8") as handle:
             self.assertEqual(handle.read(), html)
 
     def test_without_the_flag_nothing_is_written(self):
         html = MetadataFallbackTests.META_HTML
-        with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(text=html)
-        ):
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=html)):
             self.new_main(user="_thessb17_", interactive=False)
         self.assertEqual(os.listdir(self.tmp.name), [])
 
@@ -1117,9 +1097,10 @@ class ProfileGraphQLTests(BaseTestCase):
             return FakeResponse(status_code=400, payload={"message": "bad doc"})
 
         ig = self.make()
-        with mock.patch.object(
-            api.main, "_resolve_user_id", return_value="123"
-        ), mock.patch.object(api.main, "_get", side_effect=fake_get):
+        with (
+            mock.patch.object(api.main, "_resolve_user_id", return_value="123"),
+            mock.patch.object(api.main, "_get", side_effect=fake_get),
+        ):
             user = ig._fetch_from_profile_graphql()
         self.assertEqual(user["biography"], "gql bio")
         self.assertEqual(seen[0], api.PROFILE_DOC_IDS[0])
@@ -1187,9 +1168,7 @@ class AnonymousPageTests(BaseTestCase):
         session = mock.Mock()
         session.get.return_value = FakeResponse(text=self.HTML)
         ig = self.make()
-        with mock.patch.object(
-            api.main, "_anonymous_session", return_value=session
-        ):
+        with mock.patch.object(api.main, "_anonymous_session", return_value=session):
             user = ig._fetch_from_anonymous_page()
         self.assertEqual(user["biography"], "anon bio")
         self.assertEqual(ig.data_source, "logged-out profile page")
@@ -1208,6 +1187,7 @@ class AnonymousPageTests(BaseTestCase):
 
     def test_metadata_post_count_fills_a_payload_without_media_count(self):
         embedded = json.loads(json.dumps(self.EMBEDDED))
+
         def find_user(obj):
             if isinstance(obj, dict):
                 if "xig_user_by_username" in obj:
@@ -1239,9 +1219,10 @@ class AnonymousPageTests(BaseTestCase):
         )
         session = mock.Mock()
         session.get.return_value = FakeResponse(text=html)
-        with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(text=meta)
-        ), mock.patch.object(api.main, "_anonymous_session", return_value=session):
+        with (
+            mock.patch.object(api.main, "_get", return_value=FakeResponse(text=meta)),
+            mock.patch.object(api.main, "_anonymous_session", return_value=session),
+        ):
             ig = self.new_main(user="prottoy.raha.r", interactive=False)
         self.assertEqual(ig.output["posts"], "4242")
         self.assertEqual(ig.output["bio"], "anon bio")
@@ -1257,9 +1238,10 @@ class AnonymousPageTests(BaseTestCase):
         )
         session = mock.Mock()
         session.get.return_value = FakeResponse(text=self.HTML)
-        with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(text=meta)
-        ), mock.patch.object(api.main, "_anonymous_session", return_value=session):
+        with (
+            mock.patch.object(api.main, "_get", return_value=FakeResponse(text=meta)),
+            mock.patch.object(api.main, "_anonymous_session", return_value=session),
+        ):
             ig = self.new_main(user="prottoy.raha.r", interactive=False)
         self.assertEqual(ig.output["bio"], "anon bio")
         self.assertFalse(ig.limited_data)
@@ -1293,9 +1275,7 @@ class PageInspectTests(BaseTestCase):
 class EnvironmentWarningTests(BaseTestCase):
     def test_missing_curl_cffi_is_warned_about(self):
         out = io.StringIO()
-        with mock.patch.object(
-            api, "curl_requests", None
-        ), contextlib.redirect_stdout(out):
+        with mock.patch.object(api, "curl_requests", None), contextlib.redirect_stdout(out):
             self.make()
         text = out.getvalue()
         self.assertIn("curl_cffi is not installed", text)
@@ -1304,22 +1284,26 @@ class EnvironmentWarningTests(BaseTestCase):
     def test_sessionid_only_saved_session_is_not_nagged_about(self):
         api.save_session({"sessionid": "only"}, self.session_path)
         out = io.StringIO()
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", " (logged in as @x)")
-        ), contextlib.redirect_stdout(out):
+        with (
+            mock.patch.object(
+                api.main, "_session_status", return_value=("valid", " (logged in as @x)")
+            ),
+            contextlib.redirect_stdout(out),
+        ):
             self.make()
         text = out.getvalue()
         self.assertNotIn("ds_user_id", text)
         self.assertNotIn("only the sessionid is saved", text)
 
     def test_complete_saved_session_is_not_flagged(self):
-        api.save_session(
-            {"sessionid": "full", "ds_user_id": "1", "mid": "m"}, self.session_path
-        )
+        api.save_session({"sessionid": "full", "ds_user_id": "1", "mid": "m"}, self.session_path)
         out = io.StringIO()
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", " (logged in as @x)")
-        ), contextlib.redirect_stdout(out):
+        with (
+            mock.patch.object(
+                api.main, "_session_status", return_value=("valid", " (logged in as @x)")
+            ),
+            contextlib.redirect_stdout(out),
+        ):
             self.make()
         self.assertNotIn("only the sessionid is saved", out.getvalue())
 
@@ -1329,12 +1313,15 @@ class StepTraceTests(BaseTestCase):
 
     def test_successful_run_prints_the_steps(self):
         out = io.StringIO()
-        with mock.patch.object(
-            api.main,
-            "_get",
-            return_value=FakeResponse(payload={"data": {"user": dict(USER)}}),
-        ), contextlib.redirect_stdout(out):
-            self.new_main(user="prottoy.raha.r", interactive=False)
+        with (
+            mock.patch.object(
+                api.main,
+                "_get",
+                return_value=FakeResponse(payload={"data": {"user": dict(USER)}}),
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            self.new_main(user="prottoy.raha.r", interactive=False, debug=True)
         text = ANSI.sub("", out.getvalue())
         for expected in (
             "[step] target:",
@@ -1351,11 +1338,12 @@ class StepTraceTests(BaseTestCase):
             return FakeResponse(status_code=429)
 
         out = io.StringIO()
-        with mock.patch.object(
-            api.main, "_get", side_effect=fake_get
-        ), contextlib.redirect_stdout(out):
+        with (
+            mock.patch.object(api.main, "_get", side_effect=fake_get),
+            contextlib.redirect_stdout(out),
+        ):
             with self.assertRaises(api.InstagramError):
-                self.new_main(user="prottoy.raha.r", interactive=False)
+                self.new_main(user="prottoy.raha.r", interactive=False, debug=True)
         text = ANSI.sub("", out.getvalue())
         self.assertIn("1/11 profile API", text)
         self.assertIn("2/11 profile page", text)
@@ -1364,10 +1352,11 @@ class StepTraceTests(BaseTestCase):
     def test_metadata_only_run_names_the_stripped_payload(self):
         html = MetadataFallbackTests.META_HTML
         out = io.StringIO()
-        with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(text=html)
-        ), contextlib.redirect_stdout(out):
-            self.new_main(user="_thessb17_", interactive=False)
+        with (
+            mock.patch.object(api.main, "_get", return_value=FakeResponse(text=html)),
+            contextlib.redirect_stdout(out),
+        ):
+            self.new_main(user="_thessb17_", interactive=False, debug=True)
         text = ANSI.sub("", out.getvalue())
         self.assertIn("no embedded profile JSON", text)
         self.assertIn("profile source: profile page metadata", text)
@@ -1375,14 +1364,19 @@ class StepTraceTests(BaseTestCase):
     def test_verified_session_is_not_offered_again(self):
         out = io.StringIO()
         meta = FakeResponse(text=MetadataFallbackTests.META_HTML)
-        with mock.patch.object(
-            api.main, "_get", return_value=meta
-        ), mock.patch.object(
-            api.main, "_session_status", return_value=("valid", " (logged in as @x)")
-        ), mock.patch("api.api._read_prompt") as prompt:
+        with (
+            mock.patch.object(api.main, "_get", return_value=meta),
+            mock.patch.object(
+                api.main, "_session_status", return_value=("valid", " (logged in as @x)")
+            ),
+            mock.patch("api.api._read_prompt") as prompt,
+        ):
             with contextlib.redirect_stdout(out):
                 ig = self.new_main(
-                    user="_thessb17_", sessionid="good", interactive=False
+                    user="_thessb17_",
+                    sessionid="good",
+                    interactive=False,
+                    debug=True,
                 )
                 ig.print_data_()
         prompt.assert_not_called()
@@ -1390,10 +1384,23 @@ class StepTraceTests(BaseTestCase):
         self.assertIn("not asking for another sessionid", text)
         self.assertIn("logging in again will not help", text)
 
+    def test_steps_stay_hidden_unless_debug_is_on(self):
+        out = io.StringIO()
+        with (
+            mock.patch.object(
+                api.main,
+                "_get",
+                return_value=FakeResponse(payload={"data": {"user": dict(USER)}}),
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            self.new_main(user="prottoy.raha.r", interactive=False)
+        self.assertNotIn("[step]", ANSI.sub("", out.getvalue()))
+
 
 class MetadataFallbackTests(BaseTestCase):
     META_HTML = (
-        '<html><head>'
+        "<html><head>"
         '<meta property="og:title" '
         'content="Thess B (@_thessb17_) • Instagram photos" />'
         '<meta property="og:description" content="1,234 Followers, 56 Following, '
@@ -1403,9 +1410,7 @@ class MetadataFallbackTests(BaseTestCase):
     )
 
     def test_profile_page_metadata_is_used_when_payload_is_stripped(self):
-        with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(text=META_HTML)
-        ):
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=META_HTML)):
             ig = self.new_main(user="_thessb17_", interactive=False)
         self.assertEqual(ig.output["followers"], "1234")
         self.assertEqual(ig.output["following"], "56")
@@ -1416,9 +1421,7 @@ class MetadataFallbackTests(BaseTestCase):
         self.assertEqual(ig.data_source, "profile page metadata")
 
     def test_metadata_for_another_account_is_rejected(self):
-        with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(text=META_HTML)
-        ):
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=META_HTML)):
             with self.assertRaises(api.InstagramError):
                 self.make(username="someone_else")._fetch_from_html()
 
@@ -1474,9 +1477,10 @@ class MetadataFallbackTests(BaseTestCase):
                 raise api.RateLimitedError("limited", retry_after=0)
             return dict(USER)
 
-        with mock.patch.object(
-            api.main, "_fetch_profile", side_effect=fetch
-        ), mock.patch("api.api.time.sleep") as sleeper:
+        with (
+            mock.patch.object(api.main, "_fetch_profile", side_effect=fetch),
+            mock.patch("api.api.time.sleep") as sleeper,
+        ):
             ig = self.new_main(
                 user="prottoy.raha.r",
                 interactive=False,
@@ -1496,9 +1500,10 @@ class MetadataFallbackTests(BaseTestCase):
                 raise api.RateLimitedError("limited", retry_after=120)
             return dict(USER)
 
-        with mock.patch.object(
-            api.main, "_fetch_profile", side_effect=fetch
-        ), mock.patch("api.api.time.sleep") as sleeper:
+        with (
+            mock.patch.object(api.main, "_fetch_profile", side_effect=fetch),
+            mock.patch("api.api.time.sleep") as sleeper,
+        ):
             self.new_main(
                 user="prottoy.raha.r",
                 interactive=False,
@@ -1516,21 +1521,22 @@ class MetadataFallbackTests(BaseTestCase):
                 raise api.RateLimitedError("limited")
             return dict(USER)
 
-        with mock.patch.object(
-            api.main, "_fetch_profile", side_effect=fetch
-        ), mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=good", ""]
-        ) as prompter:
+        with (
+            mock.patch.object(api.main, "_fetch_profile", side_effect=fetch),
+            mock.patch.object(api.main, "_session_status", return_value=("valid", "")),
+            mock.patch("api.api._read_prompt", side_effect=["sessionid=good", ""]) as prompter,
+        ):
             ig = self.new_main(user="prottoy.raha.r", interactive=True)
         self.assertEqual(prompter.call_count, 2)
         self.assertEqual(ig.sessionid, "good")
 
     def test_no_retry_by_default(self):
-        with mock.patch.object(
-            api.main, "_fetch_profile", side_effect=api.RateLimitedError("limited")
-        ), mock.patch("api.api.time.sleep") as sleeper:
+        with (
+            mock.patch.object(
+                api.main, "_fetch_profile", side_effect=api.RateLimitedError("limited")
+            ),
+            mock.patch("api.api.time.sleep") as sleeper,
+        ):
             with self.assertRaises(api.RateLimitedError):
                 self.new_main(user="prottoy.raha.r", interactive=False)
         sleeper.assert_not_called()
@@ -1557,12 +1563,8 @@ class CookieAndHostTests(BaseTestCase):
             self.assertEqual(api._parse_cookie_input(raw), expected, raw)
 
     def test_full_cookie_header_is_applied(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", "")
-        ):
-            ig = self.make(
-                sessionid="sessionid=sess1; csrftoken=csrf1; ds_user_id=99"
-            )
+        with mock.patch.object(api.main, "_session_status", return_value=("valid", "")):
+            ig = self.make(sessionid="sessionid=sess1; csrftoken=csrf1; ds_user_id=99")
             cookies = ig.session.cookies.get_dict()
         self.assertEqual(ig.sessionid, "sess1")
         self.assertEqual(cookies["csrftoken"], "csrf1")
@@ -1593,9 +1595,7 @@ class CookieAndHostTests(BaseTestCase):
         with mock.patch.object(api.main, "_get", side_effect=fake_get):
             ig = self.new_main(user="prottoy.raha.r", interactive=False)
         web_url, web_headers = next(
-            (url, headers)
-            for url, headers in seen
-            if "usernameinfo" in url
+            (url, headers) for url, headers in seen if "usernameinfo" in url
         )
         self.assertTrue(web_url.startswith("https://www.instagram.com/"))
         self.assertEqual(web_headers.get("X-IG-App-ID"), api.IG_APP_ID)
@@ -1685,11 +1685,13 @@ class ThrottlingTests(BaseTestCase):
 
     def test_verified_session_does_not_prompt_on_429(self):
         response = FakeResponse(status_code=429, headers={"Retry-After": "600"})
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("valid", " (logged in as @me)")
-        ), mock.patch.object(
-            api.main, "_get", return_value=response
-        ), mock.patch("api.api._read_prompt") as prompter:
+        with (
+            mock.patch.object(
+                api.main, "_session_status", return_value=("valid", " (logged in as @me)")
+            ),
+            mock.patch.object(api.main, "_get", return_value=response),
+            mock.patch("api.api._read_prompt") as prompter,
+        ):
             with self.assertRaises(api.RateLimitedError) as caught:
                 self.new_main(user="prottoy.raha.r", sessionid="good", interactive=True)
         prompter.assert_not_called()
@@ -1743,15 +1745,15 @@ class ThrottlingTests(BaseTestCase):
                 self.make()._fetch_from_html()
 
     def test_unverified_session_still_prompts_on_login_wall(self):
-        with mock.patch.object(
-            api.main, "_session_status", return_value=("invalid", "HTTP 401")
-        ), mock.patch.object(
-            api.main,
-            "_fetch_profile",
-            side_effect=api.LoginRequiredError("login"),
-        ), mock.patch(
-            "api.api._read_prompt", side_effect=[""]
-        ) as prompter:
+        with (
+            mock.patch.object(api.main, "_session_status", return_value=("invalid", "HTTP 401")),
+            mock.patch.object(
+                api.main,
+                "_fetch_profile",
+                side_effect=api.LoginRequiredError("login"),
+            ),
+            mock.patch("api.api._read_prompt", side_effect=[""]) as prompter,
+        ):
             with self.assertRaises(api.LoginRequiredError):
                 self.new_main(user="prottoy.raha.r", interactive=True)
         self.assertEqual(prompter.call_count, 1)
@@ -1779,14 +1781,16 @@ class ThrottlingTests(BaseTestCase):
                 api._read_prompt("sessionid: ")
 
     def test_no_more_than_three_prompts(self):
-        with mock.patch.object(
-            api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
-        ), mock.patch.object(
-            api.main, "_session_status", return_value=("unknown", "no network")
-        ), mock.patch(
-            "api.api._read_prompt",
-            side_effect=["a", "", "b", "", "c", "", "d", ""],
-        ) as prompter:
+        with (
+            mock.patch.object(
+                api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
+            ),
+            mock.patch.object(api.main, "_session_status", return_value=("unknown", "no network")),
+            mock.patch(
+                "api.api._read_prompt",
+                side_effect=["a", "", "b", "", "c", "", "d", ""],
+            ) as prompter,
+        ):
             with self.assertRaises(api.InstagramError):
                 self.new_main(user="prottoy.raha.r", interactive=True)
         # three sessionid attempts (plus the csrftoken asks) at most
@@ -1804,9 +1808,7 @@ class ThrottlingTests(BaseTestCase):
 
         with mock.patch.object(api.main, "_get", side_effect=fake_get):
             ig = self.make(sessionid="good")
-            ig.session.cookies.set(
-                "csrftoken", "tok123", domain=".instagram.com"
-            )
+            ig.session.cookies.set("csrftoken", "tok123", domain=".instagram.com")
             headers = ig._session_headers()
         self.assertEqual(headers.get("X-CSRFToken"), "tok123")
         self.assertTrue(any(url == "https://www.instagram.com/" for url, _ in calls))
@@ -1856,9 +1858,7 @@ class ProductionTests(BaseTestCase):
 
     def test_session_write_is_atomic(self):
         real_replace = os.replace
-        with mock.patch.object(
-            api.os, "replace", side_effect=real_replace
-        ) as replace:
+        with mock.patch.object(api.os, "replace", side_effect=real_replace) as replace:
             api.save_session({"sessionid": "abc"}, self.session_path)
         replace.assert_called_once()
         source, target = replace.call_args.args
@@ -1867,6 +1867,68 @@ class ProductionTests(BaseTestCase):
         self.assertEqual(api.load_session(self.session_path)["sessionid"], "abc")
         leftovers = [name for name in os.listdir(self.tmp.name) if ".tmp" in name]
         self.assertEqual(leftovers, [])
+
+
+class FakeTTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class ProgressTests(unittest.TestCase):
+    """The one-line progress display: on for terminals, off for everything else."""
+
+    def setUp(self):
+        self.real_stream = api._status.stream
+        self.stream = FakeTTY()
+        api._status.stream = self.stream
+        api.set_progress(True)
+        api.set_quiet(False)
+
+    def tearDown(self):
+        api._status.stop()
+        api._status.stream = self.real_stream
+        api.set_progress(True)
+        api.set_quiet(False)
+
+    def test_bar_text_is_determinate(self):
+        self.assertEqual(api._status.bar_text(6, 12), "posts [############------------] 6/12")
+
+    def test_status_draws_and_clears(self):
+        api._status.start("fetching profile")
+        self.assertTrue(api._status.active)
+        self.assertIn("fetching profile", self.stream.getvalue())
+        api._status.stop()
+        self.assertFalse(api._status.active)
+        self.assertTrue(self.stream.getvalue().endswith("\r"))
+
+    def test_status_is_silent_off_a_terminal(self):
+        self.stream = io.StringIO()  # no isatty
+        api._status.stream = self.stream
+        api._status.start("should not appear")
+        self.assertFalse(api._status.active)
+        self.assertEqual(self.stream.getvalue(), "")
+
+    def test_quiet_disables_the_status(self):
+        api.set_quiet(True)
+        api._status.start("should not appear")
+        self.assertFalse(api._status.active)
+
+    def test_reading_a_prompt_stops_the_status(self):
+        api._status.start("busy")
+        with (
+            mock.patch("sys.stdin", io.StringIO("value\n")),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            answer = api._read_prompt("prompt: ")
+        self.assertEqual(answer, "value")
+        self.assertFalse(api._status.active)
+
+    def test_set_progress_false_turns_it_off(self):
+        api._status.start("busy")
+        api.set_progress(False)
+        self.assertFalse(api._status.active)
+        api._status.start("again")
+        self.assertFalse(api._status.active)
 
 
 if __name__ == "__main__":

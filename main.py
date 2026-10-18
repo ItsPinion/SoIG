@@ -9,6 +9,7 @@
 import argparse
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from api.api import (
     re,
     session_file_path,
     set_color,
+    set_progress,
     set_quiet,
 )
 
@@ -49,54 +51,112 @@ def build_parser():
     ap = argparse.ArgumentParser(
         description="Scrape an Instagram profile, its posts and its hashtags.",
         epilog=(
-            "exit codes: 0 ok, 1 error, 2 usage, 3 login required, "
-            "4 rate limited, 130 interrupted"
+            "exit codes: 0 ok, 1 error, 2 usage, 3 login required, 4 rate limited, 130 interrupted"
         ),
     )
-    ap.add_argument("-u", "--username", default=None,
-                    help="username of account to scan "
-                         "(not needed with -l, -F or -I)")
-    ap.add_argument("-p", "--postscrap", action='store_true',
-                    help="scrape all uploaded images info ")
-    ap.add_argument("-s", "--savedata", action='store_true',
-                    help="save data to file")
-    ap.add_argument("-t", "--tagscrap", action="store_true",
-                    help="list often used tags")
-    ap.add_argument("-x", "--proxy", default=None,
-                    help="HTTP(S) proxy to use")
-    ap.add_argument("-i", "--no-impersonate", action="store_true",
-                    help="disable browser TLS impersonation (curl_cffi)")
-    ap.add_argument("-w", "--retry-wait", type=int, default=0, metavar="SECONDS",
-                    help="wait and retry once when Instagram rate limits you")
-    ap.add_argument("-l", "--login", action="store_true",
-                    help="ask for an Instagram sessionid before scraping; "
-                         "on its own, just log in and store the session")
-    ap.add_argument("-d", "--debug", action="store_true",
-                    help="show which profile sources were tried and why they failed")
-    ap.add_argument("-f", "--session-file", default=None, metavar="PATH",
-                    help="where to save the session cookies "
-                         "(default: ~/.config/SoIG/session.json)")
-    ap.add_argument("-n", "--no-save-session", action="store_true",
-                    help="do not save the sessionid/csrftoken to disk")
-    ap.add_argument("-a", "--all-posts", action="store_true",
-                    help="page through the whole timeline instead of the first 12 posts")
-    ap.add_argument("-m", "--max-posts", type=int, default=0, metavar="N",
-                    help="stop after N posts (pages as needed; also caps "
-                         "-a/--all-posts)")
-    ap.add_argument("-D", "--dump-page", default=None, metavar="PATH",
-                    help="save the fetched profile page HTML for debugging")
-    ap.add_argument("-I", "--inspect-page", default=None, metavar="PATH",
-                    help="describe a saved profile page HTML and exit")
-    ap.add_argument("-F", "--forget-session", action="store_true",
-                    help="delete the saved sessionid/csrftoken and exit")
-    ap.add_argument("-q", "--quiet", action="store_true",
-                    help="hide progress lines and the banner")
-    ap.add_argument("-c", "--no-color", action="store_true",
-                    help="never use ANSI colours (automatic when output is piped)")
-    ap.add_argument("-j", "--json", default=None, metavar="PATH",
-                    help="also write the result as JSON to PATH ('-' = stdout)")
-    ap.add_argument("-V", "--version", action="version",
-                    version=f"%(prog)s {__version__}")
+    ap.add_argument(
+        "-u",
+        "--username",
+        default=None,
+        help="username of account to scan (not needed with -l, -F or -I)",
+    )
+    ap.add_argument(
+        "-p", "--postscrap", action="store_true", help="scrape all uploaded images info "
+    )
+    ap.add_argument("-s", "--savedata", action="store_true", help="save data to file")
+    ap.add_argument("-t", "--tagscrap", action="store_true", help="list often used tags")
+    ap.add_argument("-x", "--proxy", default=None, help="HTTP(S) proxy to use")
+    ap.add_argument(
+        "-i",
+        "--no-impersonate",
+        action="store_true",
+        help="disable browser TLS impersonation (curl_cffi)",
+    )
+    ap.add_argument(
+        "-w",
+        "--retry-wait",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="wait and retry once when Instagram rate limits you",
+    )
+    ap.add_argument(
+        "-l",
+        "--login",
+        action="store_true",
+        help="ask for an Instagram sessionid before scraping; "
+        "on its own, just log in and store the session",
+    )
+    ap.add_argument(
+        "-d",
+        "--debug",
+        action="store_true",
+        help="show which profile sources were tried and why they failed",
+    )
+    ap.add_argument(
+        "-f",
+        "--session-file",
+        default=None,
+        metavar="PATH",
+        help="where to save the session cookies (default: ~/.config/SoIG/session.json)",
+    )
+    ap.add_argument(
+        "-n",
+        "--no-save-session",
+        action="store_true",
+        help="do not save the sessionid/csrftoken to disk",
+    )
+    ap.add_argument(
+        "-a",
+        "--all-posts",
+        action="store_true",
+        help="page through the whole timeline instead of the first 12 posts",
+    )
+    ap.add_argument(
+        "-m",
+        "--max-posts",
+        type=int,
+        default=0,
+        metavar="N",
+        help="stop after N posts (pages as needed; also caps -a/--all-posts)",
+    )
+    ap.add_argument(
+        "-D",
+        "--dump-page",
+        default=None,
+        metavar="PATH",
+        help="save the fetched profile page HTML for debugging",
+    )
+    ap.add_argument(
+        "-I",
+        "--inspect-page",
+        default=None,
+        metavar="PATH",
+        help="describe a saved profile page HTML and exit",
+    )
+    ap.add_argument(
+        "-F",
+        "--forget-session",
+        action="store_true",
+        help="delete the saved sessionid/csrftoken and exit",
+    )
+    ap.add_argument("-q", "--quiet", action="store_true", help="hide progress lines and the banner")
+    ap.add_argument(
+        "-c",
+        "--no-color",
+        action="store_true",
+        help="never use ANSI colours (automatic when output is piped)",
+    )
+    ap.add_argument(
+        "-j",
+        "--json",
+        default=None,
+        metavar="PATH",
+        help="also write the result as JSON to PATH ('-' = stdout)",
+    )
+    ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
+    # Not listed in --help: a small token for whoever looks closely.
+    ap.add_argument("--credits", action="store_true", help=argparse.SUPPRESS)
     return ap
 
 
@@ -106,6 +166,7 @@ def _document(ig=None, error=None, exit_code=EXIT_OK):
         "tool": "SoIG",
         "version": __version__,
         "exit_code": exit_code,
+        "credit": "ItsPinion",
     }
     if ig is not None:
         document.update(ig.to_dict())
@@ -150,6 +211,10 @@ def _report(ig, args):
 
 def _run(parser, args):
     """Carry out the requested action; returns ``(exit_code, scraper, error)``."""
+    if args["credits"]:
+        print("ItsPinion")
+        return EXIT_OK, None, None
+
     if args["inspect_page"]:
         ok = inspect_page(args["inspect_page"])
         return (EXIT_OK if ok else EXIT_ERROR), None, None
@@ -222,12 +287,17 @@ def _run(parser, args):
 
 def cli(argv=None):
     """Run SoIG; returns the process exit code."""
+    if os.name == "posix":
+        # `soig ... | head` should stop quietly instead of printing a traceback.
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     parser = build_parser()
     args = vars(parser.parse_args(argv))
 
     # Colour is a convenience for humans on a terminal, never for pipes/logs.
     set_color(not args["no_color"] and sys.stdout.isatty())
     set_quiet(args["quiet"])
+    # --debug shows the full [step] trace, so the spinner would only fight it.
+    set_progress(not args["debug"])
 
     json_path = args["json"]
     piped_json = json_path == "-"
@@ -243,7 +313,12 @@ def cli(argv=None):
         code, ig, error = _run(parser, args)
 
     if json_path:
-        _write_json(json_path, _document(ig, error=error, exit_code=code))
+        try:
+            _write_json(json_path, _document(ig, error=error, exit_code=code))
+        except OSError as exc:
+            print(f"{re}[!]{nu} could not write {json_path}: {exc}", file=sys.stderr)
+            if code == EXIT_OK:
+                code = EXIT_ERROR
     return code
 
 

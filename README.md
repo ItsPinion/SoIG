@@ -16,37 +16,42 @@ The Instagram OSINT Tool gets a range of information from an Instagram account t
 
 ### Prerequisites
 
-- Python 3.8 or higher.
-- Linux, macOS or Windows.
+- Python 3.9 or higher.
+- Linux, macOS or Windows (a terminal is recommended for the login prompt).
 
-### Project setup
+### Install
+
+Install it as a command (recommended - `soig` works from any directory):
+
+```sh
+# from a clone
+$ pipx install .          # or: pip install --user .
+$ soig -u <username>
+
+# or, for development
+$ python3 -m venv .venv
+$ . .venv/bin/activate
+$ pip install -e ".[dev]"
+```
+
+`python3 main.py ...` still works exactly like `soig ...`, so the rest of this
+file uses the longer form.
 
 ```sh
 # clone the repo
-$ git clone https://github.com/yezz123/SoIG
-
-# move to the project folder
+$ git clone https://github.com/ItsPinion/SoIG
 $ cd SoIG
 ```
 
-### Creating virtual environment
-
-- Create a virtual environment using virtualenv.
+Or keep using a virtualenv and `requirements.txt`:
 
 ```shell
-# creating virtual environment
 $ virtualenv venv
-ls -la venv/bin/
-# activate virtual environment
 $ source venv/bin/activate
-
-# install all dependencies
 $ pip install -r requirements.txt
 ```
 
 ### Running the Application
-
-- You can run the `main.py` file Manually.
 
 ```sh
 # Running the Script
@@ -161,13 +166,51 @@ $ python3 main.py -u <username> -d -a -m 500   # trace, 500 posts
 
 `-h` lists them all. The table at the end of this file has the full mapping.
 
-#### Step trace
+#### Output modes
 
-Every run prints a `[step]` line for each stage, so a bad result can be traced
-to the request that caused it:
+| Mode | What you get |
+| ---- | ------------ |
+| default | profile report, plus posts with `-p` and tags with `-t`, plus a live spinner |
+| `-q`, `--quiet` | no spinner and no banner, only warnings and the report (for scripts) |
+| `-c`, `--no-color` | no ANSI colours; also automatic when stdout is not a terminal |
+| `-d`, `--debug` | the full `[step]` trace instead of the spinner, with URLs and statuses |
+| `-j PATH`, `--json PATH` | the same result as JSON (`-j -` prints only JSON on stdout) |
+
+On success the JSON document has `tool`, `version`, `exit_code`, `scraped_at`,
+`username`, `profile`, `posts`, `tags`, `posts_error` and `limited_data`; a
+failed run keeps the metadata and adds an `error` string. It can be fed straight
+to `jq`:
+
+```sh
+$ python3 main.py -u <username> -p -j - | jq '.posts[].url'
+```
+
+#### Exit codes
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | success |
+| `1` | runtime error (network, unexpected page, unreadable profile) |
+| `2` | bad usage (missing `-u`, unknown flag, negative `-m`) |
+| `3` | a login is required and none was available |
+| `4` | Instagram is rate limiting this IP (retry with `-w/--retry-wait`) |
+| `130` | interrupted with Ctrl+C |
+
+#### Progress and debugging
+
+A normal run keeps the terminal quiet: a one-line spinner shows the current
+request, and long timelines get a live progress bar (only on a terminal - pipes
+and log files stay clean):
 
 ```text
-[+] getting profile ...
+| fetching @headlines.ban
+posts [########----------------] 12/24
+```
+
+Add `-d/--debug` to replace that with a `[step]` line for every stage, so a bad
+result can be traced to the request that caused it:
+
+```text
 [step] target: headlines.ban | login: False | save session: True | proxy: no
 [step] transport: curl_cffi (Chrome impersonation)
 [step] saved session: /home/you/.config/SoIG/session.json (csrftoken, sessionid)
@@ -189,8 +232,8 @@ to the request that caused it:
 [step] done in 3.4s
 ```
 
-`--debug` additionally prints the exact URL, HTTP status and response size of
-every request.
+`-d/--debug` also prints the exact URL, HTTP status and response size of every
+request. The trace is never shown unless you ask for it.
 
 The prompt works in a normal terminal (input hidden) and also when input is
 piped or comes from an IDE run pane (input visible). If no input is available at
@@ -214,9 +257,9 @@ With `-a` it caps the walk instead of extending it - the two flags never
 contradict each other.
 
 SoIG follows the feed's `end_cursor` one page at a time (12 posts per request,
-1 second apart), prints progress, and keeps what it already collected if a page
-is throttled. A `-m N` run stops as soon as N posts are in hand and trims the
-last page down to N:
+1 second apart), draws a progress bar, and keeps what it already collected if a
+page is throttled. A `-m N` run stops as soon as N posts are in hand and trims
+the last page down to N. With `-d` the same walk is logged step by step:
 
 ```text
 [step] posts: walking the whole timeline (8274 posts), one request every 1s ...
@@ -245,8 +288,9 @@ $ python3 main.py --username <username> -s   # save posts_data.txt, profile_data
 $ python3 main.py --username <username> -t   # print the full tag list instead of the top five
 ```
 
-Tags are the hashtags found in post captions. The step trace always reports
-them, so an empty list is explained rather than mysterious:
+Tags are the hashtags found in post captions. `-t` prints the full list; with
+`-d` the trace also reports how many captions were scanned, so an empty list is
+explained rather than mysterious:
 
 ```text
 [step] tags: 14 hashtags in 9 captions (6 unique)
@@ -260,6 +304,8 @@ A private profile is readable only while the logged-in account follows it and
 the follow request has been accepted. SoIG therefore does not refuse a private
 account up front: it asks Instagram's feed, and only reports the profile as
 unreadable when no posts come back.
+
+With `-d`, a readable private profile says so:
 
 ```text
 [step] posts: private account, but this session reads 12 posts, so it follows it
@@ -358,7 +404,7 @@ A simple workflow of command used to run SoIG with a Description.
 | `-x`, `--proxy PROXY`                 | route requests through an HTTP(S) proxy.                     |
 | `-w`, `--retry-wait SECONDS`          | wait and retry once after a 429.                             |
 | `-i`, `--no-impersonate`              | disable browser TLS impersonation (`curl_cffi`).             |
-| `-d`, `--debug`                       | show each profile source that was tried and why it failed.   |
+| `-d`, `--debug`                       | show the full `[step]` trace and every request that was tried. |
 | `-D`, `--dump-page PATH`              | save the profile page HTML for inspection.                   |
 | `-I`, `--inspect-page PATH`            | describe a saved page HTML and exit (no `-u` needed).        |
 | `-a`, `--all-posts`                   | page through the whole timeline.                             |
@@ -366,12 +412,22 @@ A simple workflow of command used to run SoIG with a Description.
 | `-f`, `--session-file PATH`           | where saved cookies live.                                    |
 | `-n`, `--no-save-session`             | do not save the sessionid/csrftoken to disk.                 |
 | `-F`, `--forget-session`              | delete the saved sessionid/csrftoken and exit (no `-u` needed). |
+| `-q`, `--quiet`                       | hide the spinner, progress bar and banner.                   |
+| `-c`, `--no-color`                    | no ANSI colours (automatic when piped).                      |
+| `-j`, `--json PATH`                   | also write the result as JSON (`-` prints it on stdout).     |
+| `-V`, `--version`                     | show the version and exit.                                   |
 
-## Running the tests
+## Development
 
 ```sh
-$ python -m unittest discover -s tests
+$ pip install -e ".[dev]"
+$ ruff check . && ruff format --check .
+$ python -m unittest discover -s tests -v
 ```
+
+The suite is offline (it mocks the HTTP layer) and runs on Python 3.9-3.13 in
+CI. See [CONTRIBUTING.md](CONTRIBUTING.md) for the code guidelines and
+[SECURITY.md](SECURITY.md) for how session cookies are handled.
 
 ## Contributing
 

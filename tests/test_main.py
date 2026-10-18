@@ -62,9 +62,23 @@ class ShortFlagTests(unittest.TestCase):
             with open(page, "w", encoding="utf-8") as handle:
                 handle.write("<html><script></script></html>")
             result = run(
-                "-I", page, "-l", "-d", "-a", "-m", "5", "-x", "http://h:1",
-                "-w", "1", "-i", "-f", os.path.join(tmp, "s.json"), "-n",
-                "-D", os.path.join(tmp, "dump.html"),
+                "-I",
+                page,
+                "-l",
+                "-d",
+                "-a",
+                "-m",
+                "5",
+                "-x",
+                "http://h:1",
+                "-w",
+                "1",
+                "-i",
+                "-f",
+                os.path.join(tmp, "s.json"),
+                "-n",
+                "-D",
+                os.path.join(tmp, "dump.html"),
             )
         self.assertNotEqual(result.returncode, 2, result.stderr)
         self.assertIn("JSON script tags", result.stdout)
@@ -119,8 +133,7 @@ class FakeScraper:
 
     def __init__(self, **kwargs):
         self.user = kwargs.get("user") or ""
-        self.output = {"username": self.user, "followers": "1.2K", "following": "3",
-                       "posts": "10"}
+        self.output = {"username": self.user, "followers": "1.2K", "following": "3", "posts": "10"}
         self.posts = [{"url": "instagram.com/p/a", "caption": "#x"}]
         self.tags = {"x": 1}
         self.posts_error = None
@@ -147,6 +160,12 @@ class CliTests(unittest.TestCase):
         api.set_color(True)
         api.set_quiet(False)
 
+    def test_hidden_credits_flag(self):
+        result = run("--credits")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "ItsPinion")
+        self.assertNotIn("--credits", run("--help").stdout)
+
     def test_version_flag(self):
         result = run("-V")
         self.assertEqual(result.returncode, 0)
@@ -155,8 +174,10 @@ class CliTests(unittest.TestCase):
     def test_json_file_holds_the_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "out.json")
-            with mock.patch.object(cli, "main", FakeScraper), \
-                    contextlib.redirect_stdout(io.StringIO()):
+            with (
+                mock.patch.object(cli, "main", FakeScraper),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
                 code = cli.cli(["-u", "someone", "-j", path])
             self.assertEqual(code, 0)
             with open(path, encoding="utf-8") as handle:
@@ -168,8 +189,11 @@ class CliTests(unittest.TestCase):
 
     def test_json_stdout_is_pure(self):
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(cli, "main", FakeScraper), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with (
+            mock.patch.object(cli, "main", FakeScraper),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             code = cli.cli(["-u", "someone", "-j", "-"])
         self.assertEqual(code, 0)
         self.assertIn("PROFILE REPORT", err.getvalue())
@@ -177,40 +201,48 @@ class CliTests(unittest.TestCase):
         self.assertEqual(document["username"], "someone")
 
     def test_login_required_exit_code(self):
-        with mock.patch.object(
-            cli, "main", side_effect=api.LoginRequiredError("log in")
-        ), contextlib.redirect_stdout(io.StringIO()):
+        with (
+            mock.patch.object(cli, "main", side_effect=api.LoginRequiredError("log in")),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             self.assertEqual(cli.cli(["-u", "someone"]), 3)
 
     def test_rate_limited_exit_code(self):
-        with mock.patch.object(
-            cli, "main", side_effect=api.RateLimitedError("slow down")
-        ), contextlib.redirect_stdout(io.StringIO()):
+        with (
+            mock.patch.object(cli, "main", side_effect=api.RateLimitedError("slow down")),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             self.assertEqual(cli.cli(["-u", "someone"]), 4)
 
     def test_generic_error_exit_code(self):
-        with mock.patch.object(
-            cli, "main", side_effect=api.InstagramError("broken")
-        ), contextlib.redirect_stdout(io.StringIO()):
+        with (
+            mock.patch.object(cli, "main", side_effect=api.InstagramError("broken")),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             self.assertEqual(cli.cli(["-u", "someone"]), 1)
 
     def test_interrupted_exit_code(self):
-        with mock.patch.object(
-            cli, "main", side_effect=KeyboardInterrupt
-        ), contextlib.redirect_stdout(io.StringIO()):
+        with (
+            mock.patch.object(cli, "main", side_effect=KeyboardInterrupt),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             self.assertEqual(cli.cli(["-u", "someone"]), 130)
 
     def test_quiet_flag_sets_quiet_mode(self):
-        with mock.patch.object(cli, "main", FakeScraper), \
-                mock.patch.object(cli, "set_quiet") as quiet, \
-                contextlib.redirect_stdout(io.StringIO()):
+        with (
+            mock.patch.object(cli, "main", FakeScraper),
+            mock.patch.object(cli, "set_quiet") as quiet,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             cli.cli(["-u", "someone", "-q"])
         quiet.assert_called_once_with(True)
 
     def test_no_color_flag_sets_color_off(self):
-        with mock.patch.object(cli, "main", FakeScraper), \
-                mock.patch.object(cli, "set_color") as color, \
-                contextlib.redirect_stdout(io.StringIO()):
+        with (
+            mock.patch.object(cli, "main", FakeScraper),
+            mock.patch.object(cli, "set_color") as color,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             cli.cli(["-u", "someone", "-c"])
         color.assert_called_once_with(False)
 

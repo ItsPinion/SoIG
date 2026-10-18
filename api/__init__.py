@@ -5,5 +5,6 @@ that both the library and the ``soig`` command report the same number.
 """
 
 __version__ = "1.0.0"
+__author__ = "ItsPinion"
 
 __all__ = ["__version__"]
