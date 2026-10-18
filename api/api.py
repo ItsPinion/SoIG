@@ -597,7 +597,8 @@ class extra:
 
     @staticmethod
     def extract_hash_tags(stri):
-        return [part[1:] for part in stri.split() if part.startswith("#")]
+        """Hashtags in a caption, without trailing punctuation, lower-cased."""
+        return [tag.casefold() for tag in regex.findall(r"#(\w+)", stri or "")]
 
     @staticmethod
     def banner():
@@ -1821,6 +1822,16 @@ class main:
             if post["caption"]:
                 tags.extend(extra.extract_hash_tags(post["caption"]))
         self.tags = dict(collections.Counter(tags))
+        captions = sum(1 for post in self.posts if post["caption"])
+        if self.tags:
+            self._step(
+                f"tags: {sum(self.tags.values())} hashtags in {captions} "
+                f"captions ({len(self.tags)} unique)"
+            )
+        else:
+            self._step(
+                f"tags: none of the {captions} captions contain a hashtag"
+            )
         return self.tags
 
     def _profile_details(self):
@@ -2001,8 +2012,10 @@ class main:
         if likes is None:
             likes = 0
 
+        code = str(node.get("code") or "")
         return {
             "picture": picture,
+            "url": f"instagram.com/p/{code}" if code else "",
             "caption": str(caption or ""),
             "comments": str(comments),
             "comments disabled": str(_as_bool(node.get("comments_disabled", False))),

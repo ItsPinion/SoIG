@@ -169,6 +169,25 @@ The prompt works in a normal terminal (input hidden) and also when input is
 piped or comes from an IDE run pane (input visible). If no input is available at
 all, SoIG tells you to rerun with `--login` from a terminal.
 
+#### Posts and tags
+
+The first page of posts (up to 12) is loaded with the profile. Use:
+
+```sh
+$ python3 main.py --username <username> -p   # print each post (URL, caption, likes, comments, time)
+$ python3 main.py --username <username> -s   # save posts_data.txt, profile_data.txt, tags.txt and the avatar
+$ python3 main.py --username <username> -t   # print the full tag list instead of the top five
+```
+
+Tags are the hashtags found in post captions. The step trace always reports
+them, so an empty list is explained rather than mysterious:
+
+```text
+[step] tags: 14 hashtags in 9 captions (6 unique)
+# or
+[step] tags: none of the 12 captions contain a hashtag
+```
+
 #### Saved sessions
 
 Instead of pasting one long string, SoIG asks for the two values it needs:

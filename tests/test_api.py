@@ -127,6 +127,27 @@ class ProfileTests(BaseTestCase):
         self.assertEqual(ig.tags, {})
         self.assertEqual(ig.scrap_uploads(), 1)
 
+    def test_extract_hash_tags_is_case_insensitive_and_strips_punctuation(self):
+        self.assertEqual(
+            api.extra.extract_hash_tags("Big #News, and #news #Yunus's #Data!"),
+            ["news", "news", "yunus", "data"],
+        )
+
+    def test_scrap_uploads_prints_url_and_caption(self):
+        ig = self.make(MODERN_USER, feed=MODERN_FEED)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ig.scrap_uploads()
+        text = out.getvalue()
+        self.assertIn("instagram.com/p/abc123", text)
+        self.assertIn("#modern #osint #modern", text)
+
+    def test_tag_summary_step_is_printed(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.make(MODERN_USER, feed=MODERN_FEED)
+        self.assertIn("tags: 3 hashtags in 1 captions", out.getvalue())
+
     def test_save_data(self):
         ig = self.make()
         with mock.patch.object(ig, "_get", return_value=FakeResponse()):
