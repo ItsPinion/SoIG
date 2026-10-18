@@ -1,6 +1,6 @@
-#!/bin/env python3
-
 import collections
+import contextlib
+import datetime
 import getpass
 import json
 import os
@@ -22,10 +22,37 @@ except ImportError:  # pragma: no cover - exercised only without the extra
 
 collections.Callable = collections.abc.Callable
 
-nu = "\033[0m"
-re = "\033[1;31m"
-gr = "\033[1;32m"
-cy = "\033[1;36m"
+class _Ansi:
+    """A terminal colour that disappears when colour is switched off."""
+
+    enabled = True
+
+    def __init__(self, code):
+        self._code = code
+
+    def __str__(self):
+        return self._code if _Ansi.enabled else ""
+
+    def __format__(self, spec):
+        return format(str(self), spec)
+
+
+nu = _Ansi("\033[0m")
+re = _Ansi("\033[1;31m")
+gr = _Ansi("\033[1;32m")
+cy = _Ansi("\033[1;36m")
+_quiet = False
+
+
+def set_color(enabled):
+    """Turn ANSI colours on or off (the CLI disables them when piped)."""
+    _Ansi.enabled = bool(enabled)
+
+
+def set_quiet(enabled):
+    """Silence progress lines and the banner; warnings and results still print."""
+    global _quiet
+    _quiet = bool(enabled)
 
 useragent = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -177,9 +204,7 @@ def _stdin_available():
     stream = getattr(sys, "stdin", None)
     if stream is None:
         return False
-    if getattr(stream, "closed", False):
-        return False
-    return True
+    return not getattr(stream, "closed", False)
 
 
 def _read_prompt(prompt):
@@ -277,16 +302,22 @@ def save_session(cookies, path=None, username=None):
 
     try:
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(path.parent, 0o700)
-        except OSError:
-            pass
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # Write to a sibling temp file and rename, so a crash mid-write cannot
+        # leave a truncated session (which would force a new login).
+        temp = path.with_name(f".{path.name}.tmp")
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
         os.chmod(path, 0o600)
     except OSError:
+        with contextlib.suppress(OSError):
+            temp.unlink()
         return None
     return path
 
@@ -587,16 +618,20 @@ class extra:
                 apiurl + urllib.parse.quote(url, safe=""), timeout=5
             ) as response:
                 return response.read().decode("utf-8").strip()
-        except Exception:
-            # URL shortening is cosmetic; never let it break a scrape.
+        except Exception:  # noqa: BLE001 - cosmetic, must never break a scrape
             return url
 
     @staticmethod
     def write(in_text):
-        for char in in_text:
-            time.sleep(0.1)
-            sys.stdout.write(char)
-            sys.stdout.flush()
+        """Write text immediately.
+
+        The old typing animation slept 0.1s per character, which cost several
+        seconds on every run and only made logs harder to read.
+        """
+        if _quiet:
+            return
+        sys.stdout.write(in_text)
+        sys.stdout.flush()
 
     @staticmethod
     def extract_hash_tags(stri):
@@ -605,12 +640,14 @@ class extra:
 
     @staticmethod
     def banner():
+        if _quiet:
+            return
         print(
             f"""{cy}
   ╔═╗ ╔═╗     ╦  ╔═╗
   ╚═╗ ║ ║     ║  ║ ╦
   ╚═╝ ╚═╝  {gr}o{cy}  ╩  ╚═╝
- 
+
         {gr}Coded By :
   {gr}Yezz123{nu}
 \t            """
@@ -703,6 +740,8 @@ class main:
     @staticmethod
     def _step(message):
         """Print a numbered-free progress line so a failure can be located."""
+        if _quiet:
+            return
         print(f"{cy}[step]{nu} {message}")
 
     def _status_text(self):
@@ -795,7 +834,7 @@ class main:
         """
         if self.session.cookies.get("csrftoken"):
             return
-        try:
+        with contextlib.suppress(InstagramError):
             self._get(
                 HOME_URL,
                 headers={
@@ -805,8 +844,6 @@ class main:
                     )
                 },
             )
-        except InstagramError:
-            pass
 
     def _api_headers(self, reference_username=None, mobile=False):
         """Headers for API calls, matching the web or mobile Instagram client."""
@@ -1234,7 +1271,9 @@ class main:
                     f"the {source} served a login wall instead of JSON"
                 ) from None
             if _looks_like_rate_limit(response.text):
-                raise RateLimitedError(f"the {source} is rate limiting this IP")
+                raise RateLimitedError(
+                    f"the {source} is rate limiting this IP"
+                ) from None
             raise InstagramError(f"the {source} returned non-JSON data") from None
 
         user = _dig(payload, "data", "user")
@@ -1467,7 +1506,7 @@ class main:
         urls = [MOBILE_FEED_URL.format(username=self.user)]
         user_id = self._resolve_user_id()
         if user_id:
-            urls.append(MOBILE_API + "/feed/user/{user_id}/".format(user_id=user_id))
+            urls.append(f"{MOBILE_API}/feed/user/{user_id}/")
         for url in urls:
             try:
                 items = self._request_feed_items(url, "mobile user feed", mobile=True)
@@ -1916,6 +1955,24 @@ class main:
             )
         return self.tags
 
+    def to_dict(self):
+        """A JSON-serialisable snapshot of this run (used by ``--json``)."""
+        profile = dict(getattr(self, "output", None) or {})
+        for key in ("followers", "following", "posts"):
+            if key in profile:
+                profile[key] = _parse_count(profile[key])
+        return {
+            "scraped_at": datetime.datetime.now()
+            .astimezone()
+            .isoformat(timespec="seconds"),
+            "username": self.user,
+            "profile": profile,
+            "posts": [dict(post) for post in self.posts],
+            "tags": dict(self.tags),
+            "posts_error": self.posts_error,
+            "limited_data": bool(self.limited_data),
+        }
+
     def _profile_details(self):
         p_data = self.p_data
         username = str(p_data.get("username") or self.user)
@@ -2317,7 +2374,7 @@ class main:
         extra.banner()
         for key, value in self.output.items():
             print(f"{gr}{key:<17} : {nu}{value}")
-        print("")
+        print()
 
     def make_dir(self):
         path = os.path.join(self.base_dir, self.user)
@@ -2344,7 +2401,7 @@ class main:
             for key, value in post.items():
                 if key not in ("picture", "caption"):
                     print(f"{gr}{key} : {nu}{value}")
-            print("")
+            print()
 
     def most_common_tags(self):
         self._warn_posts_error()

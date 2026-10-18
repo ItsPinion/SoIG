@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import api.api as api
 
-
 USER = {
     "username": "prottoy.raha.r",
     "full_name": "Prottoy Raha",
@@ -1001,7 +1000,6 @@ class UpgradeTests(BaseTestCase):
                 return FakeResponse(status_code=429)
             return FakeResponse(status_code=429)
 
-        real_get = api.main._get
         state = {"logged_in": False}
         original_set_cookies = api.main._set_cookies
 
@@ -1819,6 +1817,56 @@ class ThrottlingTests(BaseTestCase):
             ig._set_sessionid("abc")
         urls = [call.args[0] for call in getter.call_args_list]
         self.assertIn("https://www.instagram.com/", urls)
+
+
+class ProductionTests(BaseTestCase):
+    """Behaviour the CLI relies on: quiet mode, colour switch, JSON export."""
+
+    def tearDown(self):
+        api.set_color(True)
+        api.set_quiet(False)
+        super().tearDown()
+
+    def test_to_dict_is_json_ready(self):
+        ig = self.make()
+        document = ig.to_dict()
+        self.assertEqual(document["username"], "prottoy.raha.r")
+        self.assertEqual(document["profile"]["followers"], 120)
+        self.assertEqual(document["profile"]["following"], 42)
+        self.assertEqual(len(document["posts"]), 2)
+        self.assertEqual(document["tags"], {"python": 2, "osint": 1})
+        self.assertIsNone(document["posts_error"])
+        json.dumps(document)  # must not raise
+
+    def test_quiet_silences_steps_and_banner(self):
+        ig = self.make()
+        api.set_quiet(True)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ig._step("this should not appear")
+            api.extra.banner()
+        self.assertEqual(out.getvalue(), "")
+
+    def test_colour_can_be_switched_off(self):
+        api.set_color(False)
+        self.assertEqual(str(api.re), "")
+        self.assertEqual(f"{api.gr}hello{api.nu}", "hello")
+        api.set_color(True)
+        self.assertIn("\033[", str(api.gr))
+
+    def test_session_write_is_atomic(self):
+        real_replace = os.replace
+        with mock.patch.object(
+            api.os, "replace", side_effect=real_replace
+        ) as replace:
+            api.save_session({"sessionid": "abc"}, self.session_path)
+        replace.assert_called_once()
+        source, target = replace.call_args.args
+        self.assertNotEqual(str(source), str(target))
+        self.assertIn(".tmp", str(source))
+        self.assertEqual(api.load_session(self.session_path)["sessionid"], "abc")
+        leftovers = [name for name in os.listdir(self.tmp.name) if ".tmp" in name]
+        self.assertEqual(leftovers, [])
 
 
 if __name__ == "__main__":

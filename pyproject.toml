@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "soig"
+version = "1.0.0"
+description = "Instagram OSINT tool: scrape a profile, its posts and hashtags from the command line"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Yasser Tahiri" }]
+keywords = ["instagram", "osint", "scraper", "cli", "instagram-scraper"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Internet :: WWW/HTTP",
+]
+dependencies = [
+    "beautifulsoup4>=4.12,<5",
+    "requests>=2.31,<3",
+    "curl_cffi>=0.7",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.6", "build>=1.2"]
+
+[project.scripts]
+soig = "main:cli"
+
+[project.urls]
+Homepage = "https://github.com/ItsPinion/SoIG"
+Repository = "https://github.com/ItsPinion/SoIG"
+Issues = "https://github.com/ItsPinion/SoIG/issues"
+
+[tool.setuptools]
+py-modules = ["main"]
+packages = ["api"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Nested `with mock.patch(...)` blocks read better than a single 6-context line.
+"tests/*" = ["B011", "B017", "SIM117"]
+
+[tool.coverage.run]
+source = ["api", "main"]
+branch = true
+
+[tool.coverage.report]
+skip_empty = true
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]
