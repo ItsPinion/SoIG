@@ -139,6 +139,10 @@ $ python3 main.py --username <username> --login
 quickest way to see whether you are hitting a login wall, a 429, or a stripped
 page.
 
+The prompt works in a normal terminal (input hidden) and also when input is
+piped or comes from an IDE run pane (input visible). If no input is available at
+all, SoIG prints the `IG_SESSIONID=...` command to use instead.
+
 #### Browser impersonation (recommended)
 
 Instagram strips the embedded JSON payload and rate limits harder for Python

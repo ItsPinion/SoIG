@@ -129,6 +129,29 @@ def _as_bool(value):
     return bool(value)
 
 
+def _stdin_available():
+    """True when a prompt can read from stdin without blocking forever."""
+    stream = getattr(sys, "stdin", None)
+    if stream is None:
+        return False
+    if getattr(stream, "closed", False):
+        return False
+    return True
+
+
+def _read_prompt(prompt):
+    """Read one line, hidden on a real terminal and visible elsewhere."""
+    stream = sys.stdin
+    if stream is not None and getattr(stream, "isatty", lambda: False)():
+        return getpass.getpass(prompt)
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    line = stream.readline() if stream is not None else ""
+    if not line:
+        raise EOFError
+    return line.rstrip("\r\n")
+
+
 def _parse_cookie_input(value):
     """Turn pasted text into a ``{cookie name: value}`` mapping.
 
@@ -425,12 +448,11 @@ class main:
             # With impersonation curl_cffi already sends a matching UA.
             headers["User-Agent"] = random.choice(useragent)
         self.session.headers.update(headers)
-        # Prompts for a sessionid only when running on a real terminal.
+        # Prompting is allowed unless it was explicitly disabled, or stdin is
+        # gone (e.g. nohup/cron). It works in IDEs whose run pane is not a TTY
+        # by reading a visible line instead of using getpass.
         if interactive is None:
-            try:
-                interactive = sys.stdin.isatty()
-            except (AttributeError, ValueError):
-                interactive = False
+            interactive = _stdin_available()
         self.interactive = bool(interactive)
         self._provided_cookies = _parse_cookie_input(
             sessionid if sessionid is not None else os.environ.get("IG_SESSIONID", "")
@@ -664,7 +686,7 @@ class main:
 
         while True:
             try:
-                value = getpass.getpass(f"{gr}sessionid{nu}: ")
+                value = _read_prompt(f"{gr}sessionid{nu}: ")
             except (EOFError, KeyboardInterrupt):
                 print()
                 return False
@@ -1354,7 +1376,10 @@ class main:
 
     def _upgrade_limited_profile(self):
         """Offer a login when Instagram only exposed the public metadata."""
-        if self._session_verified or not self.interactive:
+        if self._session_verified:
+            return
+        if not self.interactive:
+            self._explain_offline_login()
             return
 
         print(
@@ -1380,6 +1405,15 @@ class main:
         self._user_id = None
         self.posts_error = None
         print(f"{gr}[+]{nu} full profile available\n")
+
+    def _explain_offline_login(self):
+        print(
+            f"{re}[!]{gr} no terminal input is available, so you cannot be asked "
+            "for a sessionid here.\n"
+            "    Export one and run again:\n"
+            f"    IG_SESSIONID='sessionid=...; csrftoken=...' python3 main.py "
+            f"-u {self.user}\n"
+        )
 
     def _warn_limited_data(self):
         if self.limited_data and not self._warned_limited:

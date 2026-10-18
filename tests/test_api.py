@@ -399,7 +399,7 @@ class LoginPromptTests(BaseTestCase):
             api.main, "_fetch_profile", side_effect=fetch
         ), mock.patch.object(
             api.main, "_session_status", side_effect=lambda: next(statuses)
-        ), mock.patch("api.api.getpass.getpass", side_effect=["wrong", "right"]):
+        ), mock.patch("api.api._read_prompt", side_effect=["wrong", "right"]):
             ig = api.main(user="prottoy.raha.r", interactive=True)
 
         self.assertEqual(ig.output["followers"], "120")
@@ -409,7 +409,7 @@ class LoginPromptTests(BaseTestCase):
     def test_prompt_is_not_used_when_not_interactive(self):
         with mock.patch.object(
             api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
-        ), mock.patch("api.api.getpass.getpass") as getpass_mock:
+        ), mock.patch("api.api._read_prompt") as getpass_mock:
             with self.assertRaises(api.LoginRequiredError):
                 api.main(user="prottoy.raha.r", interactive=False)
         getpass_mock.assert_not_called()
@@ -418,7 +418,7 @@ class LoginPromptTests(BaseTestCase):
         with mock.patch.object(
             api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
         ), mock.patch(
-            "api.api.getpass.getpass", side_effect=["   "]
+            "api.api._read_prompt", side_effect=["   "]
         ), mock.patch.object(
             api.main, "_session_status"
         ) as status:
@@ -430,7 +430,7 @@ class LoginPromptTests(BaseTestCase):
         with mock.patch.object(
             api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
         ), mock.patch(
-            "api.api.getpass.getpass", side_effect=KeyboardInterrupt
+            "api.api._read_prompt", side_effect=KeyboardInterrupt
         ):
             with self.assertRaises(api.LoginRequiredError):
                 api.main(user="prottoy.raha.r", interactive=True)
@@ -448,7 +448,7 @@ class LoginPromptTests(BaseTestCase):
             api.main, "_fetch_profile", side_effect=fetch
         ), mock.patch.object(
             api.main, "_session_status", return_value=("unknown", "timed out")
-        ), mock.patch("api.api.getpass.getpass", side_effect=["maybe"]):
+        ), mock.patch("api.api._read_prompt", side_effect=["maybe"]):
             ig = api.main(user="prottoy.raha.r", interactive=True)
         self.assertEqual(ig.output["followers"], "120")
         self.assertEqual(len(fetches), 2)
@@ -572,7 +572,7 @@ class UpgradeTests(BaseTestCase):
         with mock.patch.object(
             api.main, "_session_status", return_value=("valid", " (as @me)")
         ), mock.patch(
-            "api.api.getpass.getpass", side_effect=["sessionid=good; csrftoken=x"]
+            "api.api._read_prompt", side_effect=["sessionid=good; csrftoken=x"]
         ) as prompter:
             ig = self.meta_only(interactive=True)
         prompter.assert_called_once()
@@ -581,7 +581,7 @@ class UpgradeTests(BaseTestCase):
         self.assertEqual(ig.session.cookies.get_dict().get("csrftoken"), "x")
 
     def test_declining_upgrade_keeps_metadata(self):
-        with mock.patch("api.api.getpass.getpass", side_effect=[""]):
+        with mock.patch("api.api._read_prompt", side_effect=[""]):
             ig = self.meta_only(interactive=True)
         self.assertEqual(ig.output["followers"], "1234")
         self.assertTrue(ig.limited_data)
@@ -616,7 +616,7 @@ class UpgradeTests(BaseTestCase):
         ), mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
         ), mock.patch(
-            "api.api.getpass.getpass", side_effect=["sessionid=good"]
+            "api.api._read_prompt", side_effect=["sessionid=good"]
         ):
             ig = api.main(user="_thessb17_", interactive=True)
         self.assertFalse(ig.limited_data)
@@ -624,7 +624,7 @@ class UpgradeTests(BaseTestCase):
         self.assertEqual(ig.output["bio"], "line one, line two")
 
     def test_no_offer_when_not_interactive(self):
-        with mock.patch("api.api.getpass.getpass") as prompter:
+        with mock.patch("api.api._read_prompt") as prompter:
             ig = self.meta_only(interactive=False)
         prompter.assert_not_called()
         self.assertTrue(ig.limited_data)
@@ -633,7 +633,7 @@ class UpgradeTests(BaseTestCase):
         with mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
         ), mock.patch(
-            "api.api.getpass.getpass", side_effect=["sessionid=good"]
+            "api.api._read_prompt", side_effect=["sessionid=good"]
         ) as prompter:
             ig = self.make(login=True, interactive=True)
         prompter.assert_called_once()
@@ -915,7 +915,7 @@ class ThrottlingTests(BaseTestCase):
             api.main, "_session_status", return_value=("valid", " (logged in as @me)")
         ), mock.patch.object(
             api.main, "_get", return_value=response
-        ), mock.patch("api.api.getpass.getpass") as prompter:
+        ), mock.patch("api.api._read_prompt") as prompter:
             with self.assertRaises(api.RateLimitedError) as caught:
                 api.main(user="prottoy.raha.r", sessionid="good", interactive=True)
         prompter.assert_not_called()
@@ -976,11 +976,25 @@ class ThrottlingTests(BaseTestCase):
             "_fetch_profile",
             side_effect=api.LoginRequiredError("login"),
         ), mock.patch(
-            "api.api.getpass.getpass", side_effect=[""]
+            "api.api._read_prompt", side_effect=[""]
         ) as prompter:
             with self.assertRaises(api.LoginRequiredError):
                 api.main(user="prottoy.raha.r", interactive=True)
         self.assertEqual(prompter.call_count, 1)
+
+    def test_prompt_reads_visible_line_when_not_a_tty(self):
+        with mock.patch.object(sys, "stdin", io.StringIO("sessionid=abc\n")):
+            self.assertEqual(api._read_prompt("sessionid: "), "sessionid=abc")
+
+    def test_stdin_availability(self):
+        self.assertTrue(api._stdin_available())
+        with mock.patch.object(sys, "stdin", None):
+            self.assertFalse(api._stdin_available())
+
+    def test_eof_on_stdin_cancels(self):
+        with mock.patch.object(sys, "stdin", io.StringIO("")):
+            with self.assertRaises(EOFError):
+                api._read_prompt("sessionid: ")
 
     def test_no_more_than_three_prompts(self):
         answers = ["a", "b", "c", "d"]
@@ -989,7 +1003,7 @@ class ThrottlingTests(BaseTestCase):
         ), mock.patch.object(
             api.main, "_session_status", return_value=("unknown", "no network")
         ), mock.patch(
-            "api.api.getpass.getpass", side_effect=answers
+            "api.api._read_prompt", side_effect=answers
         ) as prompter:
             with self.assertRaises(api.InstagramError):
                 api.main(user="prottoy.raha.r", interactive=True)
