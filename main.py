@@ -38,6 +38,10 @@ ap.add_argument("--session-file", default=None, metavar="PATH",
                      "(default: ~/.config/SoIG/session.json)")
 ap.add_argument("--no-save-session", action="store_true",
                 help="do not save the sessionid/csrftoken to disk")
+ap.add_argument("--all-posts", action="store_true",
+                help="page through the whole timeline instead of the first 12 posts")
+ap.add_argument("--max-posts", type=int, default=0, metavar="N",
+                help="with --all-posts, stop after N posts (default: no limit)")
 ap.add_argument("--dump-page", default=None, metavar="PATH",
                 help="save the fetched profile page HTML for debugging")
 ap.add_argument("--inspect-page", default=None, metavar="PATH",
@@ -72,6 +76,8 @@ try:
         save_cookies=not args["no_save_session"],
         session_file=args["session_file"],
         dump_page=args["dump_page"],
+        all_posts=args["all_posts"],
+        max_posts=args["max_posts"],
     )
 except InstagramError as exc:
     print(f"\n{re}[!]{nu} {exc}\n")

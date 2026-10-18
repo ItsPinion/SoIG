@@ -297,6 +297,97 @@ class ModernProfileTests(BaseTestCase):
             edges = self.make()._fetch_feed()
         self.assertEqual(edges, MODERN_FEED)
 
+    def page(self, nodes, has_next, cursor=None):
+        return FakeResponse(payload={"data": {
+            "xdt_api__v1__feed__user_timeline_graphql_connection": {
+                "edges": [{"node": node} for node in nodes],
+                "page_info": {"has_next_page": has_next, "end_cursor": cursor},
+            }
+        }})
+
+    def feed_get(self, pages):
+        """A fake _get that only answers the feed doc_id, page by page."""
+        def fake_get(url, **kwargs):
+            params = kwargs.get("params") or {}
+            if params.get("doc_id") != api.FEED_DOC_ID:
+                return FakeResponse(payload={"data": {"user": dict(MODERN_USER)}})
+            after = json.loads(params["variables"])["after"]
+            edges, has_next, cursor = pages[after]
+            return FakeResponse(payload={"data": {
+                "xdt_api__v1__feed__user_timeline_graphql_connection": {
+                    "edges": [{"node": node} for node in edges],
+                    "page_info": {"has_next_page": has_next, "end_cursor": cursor},
+                }
+            }})
+        return fake_get
+
+    def run_with(self, pages, **kwargs):
+        calls = []
+        fake = self.feed_get(pages)
+
+        def recording_get(url, **kw):
+            params = kw.get("params") or {}
+            if params.get("doc_id") == api.FEED_DOC_ID:
+                calls.append(json.loads(params["variables"])["after"])
+            return fake(url, **kw)
+
+        with mock.patch.object(
+            api.main, "_get", side_effect=recording_get
+        ), mock.patch.object(api, "FEED_PAGE_DELAY", 0):
+            ig = self.new_main(user="prottoy.raha.r", **kwargs)
+        return ig, calls
+
+    def test_all_posts_walks_every_page(self):
+        pages = {
+            None: ([{"code": "a"}], True, "CURSOR1"),
+            "CURSOR1": ([{"code": "b"}], True, "CURSOR2"),
+            "CURSOR2": ([{"code": "c"}], False, None),
+        }
+        ig, calls = self.run_with(pages, all_posts=True)
+        self.assertEqual(
+            [post["url"] for post in ig.posts],
+            ["instagram.com/p/a", "instagram.com/p/b", "instagram.com/p/c"],
+        )
+        self.assertEqual(calls, [None, "CURSOR1", "CURSOR2"])
+
+    def test_without_the_flag_only_one_page_is_requested(self):
+        pages = {None: ([{"code": "a"}], True, "CURSOR1")}
+        ig, calls = self.run_with(pages)
+        self.assertEqual(len(ig.posts), 1)
+        self.assertEqual(calls, [None])
+
+    def test_max_posts_stops_the_walk(self):
+        pages = {
+            None: ([{"code": "a"}], True, "C1"),
+            "C1": ([{"code": "b"}], True, "C2"),
+            "C2": ([{"code": "c"}], True, "C3"),
+            "C3": ([{"code": "d"}], False, None),
+        }
+        ig, _ = self.run_with(pages, all_posts=True, max_posts=3)
+        self.assertEqual(len(ig.posts), 3)
+
+    def test_a_broken_page_keeps_what_was_collected(self):
+        def fake_get(url, **kwargs):
+            params = kwargs.get("params") or {}
+            if params.get("doc_id") != api.FEED_DOC_ID:
+                return FakeResponse(payload={"data": {"user": dict(MODERN_USER)}})
+            after = json.loads(params["variables"])["after"]
+            if after is None:
+                return FakeResponse(payload={"data": {
+                    "xdt_api__v1__feed__user_timeline_graphql_connection": {
+                        "edges": [{"node": {"code": "a"}}],
+                        "page_info": {"has_next_page": True, "end_cursor": "C1"},
+                    }
+                }})
+            return FakeResponse(status_code=429)
+
+        with mock.patch.object(
+            api.main, "_get", side_effect=fake_get
+        ), mock.patch.object(api, "FEED_PAGE_DELAY", 0):
+            ig = self.new_main(user="prottoy.raha.r", all_posts=True)
+        self.assertEqual(len(ig.posts), 1)
+        self.assertTrue(ig.posts_error)
+
     def test_save_data_with_modern_posts(self):
         ig = self.make(MODERN_USER, feed=MODERN_FEED)
         with mock.patch.object(ig, "_get", return_value=FakeResponse()):

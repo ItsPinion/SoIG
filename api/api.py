@@ -81,6 +81,8 @@ IPHONE_USER_AGENT = (
     "1170x2532; 458229237)"
 )
 FEED_PAGE_SIZE = 12
+FEED_PAGE_DELAY = 1.0  # seconds between feed pages when walking the timeline
+FEED_MAX_PAGES = 2000  # hard stop, so a bad cursor cannot loop forever
 SESSION_CHECK_URL = "https://www.instagram.com/api/v1/accounts/edit/web_form_data/"
 SESSION_CHECK_USERNAME = "instagram"
 WWW_API = "https://www.instagram.com/api/v1"
@@ -629,6 +631,8 @@ class main:
         save_cookies=True,
         session_file=None,
         dump_page=None,
+        all_posts=False,
+        max_posts=0,
     ):
         self.user = user.strip().lstrip("@").rstrip("/")
         self.base_dir = os.getcwd()
@@ -644,10 +648,13 @@ class main:
         self._prompts = 0
         self._feed_items = {}
         self._feed_edges = None
+        self._feed_page_info = {}
         self._user_id = None
         self.limited_data = False
         self._warned_limited = False
         self.data_source = ""
+        self.all_posts = bool(all_posts)
+        self.max_posts = int(max_posts or 0)
         self.retry_wait = retry_wait
         self.retries = retries
         self.proxy = (proxy or "").strip()
@@ -1839,6 +1846,7 @@ class main:
         else:
             self._step(
                 f"tags: none of the {captions} captions contain a hashtag"
+                + ("" if self.all_posts else " (first page only; try --all-posts)")
             )
         return self.tags
 
@@ -1907,7 +1915,7 @@ class main:
             return posts
 
         try:
-            edges = self._fetch_feed()
+            edges = self._fetch_all_feed_edges()
         except InstagramError as exc:
             for getter in (self._www_feed_items, self._mobile_feed_items):
                 try:
@@ -1935,8 +1943,15 @@ class main:
         """Fetch the first page of the user's posts from Instagram's feed query."""
         if self._feed_edges is not None:
             return self._feed_edges
+        edges, page_info = self._fetch_feed_page()
+        self._feed_edges = edges
+        self._feed_page_info = page_info
+        return edges
+
+    def _fetch_feed_page(self, after=None):
+        """Request one page of the feed and return ``(edges, page_info)``."""
         variables = {
-            "after": None,
+            "after": after,
             "before": None,
             "data": {
                 "count": FEED_PAGE_SIZE,
@@ -1968,21 +1983,63 @@ class main:
         except ValueError:
             raise InstagramError("the post feed returned non-JSON data") from None
 
-        edges = _dig(
+        connection = _dig(
             payload,
             "data",
             "xdt_api__v1__feed__user_timeline_graphql_connection",
-            "edges",
-            default=[],
+            default={},
         )
+        edges = connection.get("edges") if isinstance(connection, dict) else None
         if not isinstance(edges, list):
             message = payload.get("message") if isinstance(payload, dict) else None
             raise InstagramError(message or "the post feed returned no posts")
-        self._feed_edges = edges
+        page_info = connection.get("page_info") if isinstance(connection, dict) else {}
         if self.debug and edges:
             first = edges[0].get("node", edges[0]) if isinstance(edges[0], dict) else {}
             self._debug(f"feed first node keys: {sorted(first)[:25]}")
             self._debug(f"feed caption: {str(first.get('caption'))[:160]}")
+            self._debug(f"feed page_info: {page_info}")
+        return edges, page_info if isinstance(page_info, dict) else {}
+
+    def _fetch_all_feed_edges(self):
+        """Walk the whole timeline, following the feed's end cursor."""
+        edges = list(self._fetch_feed())
+        if not self.all_posts:
+            return edges
+        expected = _first_value(self.p_data, "media_count") or _dig(
+            self.p_data, "edge_owner_to_timeline_media", "count"
+        )
+        self._step(
+            "posts: walking the whole timeline"
+            + (f" ({expected} posts)" if expected else "")
+            + f", one request every {FEED_PAGE_DELAY:g}s ..."
+        )
+        page_info = getattr(self, "_feed_page_info", {}) or {}
+        page = 1
+        while page_info.get("has_next_page") and page < FEED_MAX_PAGES:
+            if self.max_posts and len(edges) >= self.max_posts:
+                break
+            cursor = page_info.get("end_cursor")
+            if not cursor:
+                self._step("posts: Instagram reported more pages but no cursor")
+                break
+            page += 1
+            time.sleep(FEED_PAGE_DELAY)
+            try:
+                new_edges, page_info = self._fetch_feed_page(after=cursor)
+            except InstagramError as exc:
+                self._step(f"posts: stopped after page {page - 1} ({exc})")
+                self.posts_error = str(exc)
+                break
+            if not new_edges:
+                break
+            edges.extend(new_edges)
+            self._step(
+                f"posts: page {page} -> {len(edges)} posts"
+                + ("" if page_info.get("has_next_page") else " (last page)")
+            )
+        if self.all_posts and len(edges) > FEED_PAGE_SIZE:
+            self._step(f"posts: collected {len(edges)} posts in {page} pages")
         return edges
 
     @staticmethod
@@ -2169,6 +2226,11 @@ class main:
                 "    The tag list is built from post captions, so an account "
                 "that does not use #hashtags has none to count.\n"
             )
+            if not self.all_posts:
+                print(
+                    "    Only the first page of posts was checked; add "
+                    "--all-posts to scan the whole timeline.\n"
+                )
             return
         for key, value in collections.Counter(self.tags).most_common():
             print(f"{gr}{key:<17} : {nu}{value}")

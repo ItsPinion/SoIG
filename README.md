@@ -171,7 +171,30 @@ all, SoIG tells you to rerun with `--login` from a terminal.
 
 #### Posts and tags
 
-The first page of posts (up to 12) is loaded with the profile. Use:
+By default the first page of posts (up to 12) is loaded with the profile, which
+keeps a run to a couple of requests. To walk the whole timeline:
+
+```sh
+$ python3 main.py --username <username> --all-posts            # every post
+$ python3 main.py --username <username> --all-posts --max-posts 200
+$ python3 main.py --username <username> -t --all-posts         # tags from every caption
+```
+
+SoIG follows the feed's `end_cursor` one page at a time (12 posts per request,
+1 second apart), prints progress, and keeps what it already collected if a page
+is throttled:
+
+```text
+[step] posts: walking the whole timeline (8274 posts), one request every 1s ...
+[step] posts: page 2 -> 24 posts
+...
+[step] posts: collected 8274 posts in 690 pages
+```
+
+For 8k posts that is roughly 690 requests and 12 minutes - use `--max-posts` to
+sample a smaller slice.
+
+Use:
 
 ```sh
 $ python3 main.py --username <username> -p   # print each post (URL, caption, likes, comments, time)
@@ -273,6 +296,8 @@ A simple workflow of command used to run SoIG with a Description.
 | `--no-impersonate`                    | disable browser TLS impersonation (`curl_cffi`).             |
 | `--debug`                             | show each profile source that was tried and why it failed.   |
 | `--dump-page PATH`                    | save the profile page HTML for inspection.                   |
+| `--all-posts`                         | page through the whole timeline.                             |
+| `--max-posts N`                       | with `--all-posts`, stop after N posts.                      |
 | `--session-file PATH`                 | where saved cookies live.                                    |
 | `--no-save-session`                   | do not save the sessionid/csrftoken to disk.                 |
 | `--forget-session`                    | delete the saved sessionid/csrftoken and exit.               |
