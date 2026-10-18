@@ -947,12 +947,14 @@ class main:
                 f"\n{gr}[+]{nu} using the saved session{detail} "
                 f"({self.session_file})"
             )
-            if "ds_user_id" not in self._stored_session:
+            missing = self._missing_extras(self._stored_session)
+            if missing:
+                names = " and ".join(f"'{name}'" for name in missing)
                 print(
-                    f"{re}[!]{gr} only the sessionid is saved; Instagram's web "
-                    "endpoints also expect 'ds_user_id' and 'mid'.\n"
-                    "    Run with --login and paste the whole Cookie header to "
-                    "store them.\n"
+                    f"{re}[!]{gr} the saved session has no {names}; "
+                    "Instagram's web endpoints expect them.\n"
+                    f"    Run with --login and paste the whole Cookie header "
+                    "(or answer the follow-up prompt) to store them.\n"
                 )
             return
         if status == "invalid":
@@ -1060,6 +1062,65 @@ class main:
             cookies = dict(cookies, csrftoken=value)
         return cookies
 
+    @staticmethod
+    def _missing_extras(cookies):
+        """Which companion cookies are still absent (ds_user_id, mid)."""
+        return [
+            name
+            for name in ("ds_user_id", "mid")
+            if not (cookies or {}).get(name)
+        ]
+
+    def _ask_extra_cookies(self, cookies):
+        """Ask for ds_user_id / mid when the pasted value did not include them.
+
+        Both come from the same browser Cookie header; they are optional
+        because some endpoints work without them, but asking here is the
+        difference between a bare sessionid and a usable web session.
+        """
+        missing = self._missing_extras(cookies)
+        if not missing:
+            return cookies
+        label = " and ".join(missing)
+        prompt = (
+            f"{gr}{label}{nu} (optional, from the same Cookie header as "
+            f"'ds_user_id=...; mid=...'): "
+        )
+        try:
+            value = _read_prompt(prompt)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return cookies
+        value = (value or "").strip()
+        if not value:
+            return cookies
+        if value.lower().startswith("cookie:"):
+            value = value[7:].strip()
+
+        parsed = {}
+        if "=" in value:
+            for part in value.split(";"):
+                name, separator, cookie = part.strip().partition("=")
+                if separator and name.strip() and cookie.strip():
+                    parsed[name.strip()] = cookie.strip()
+        elif missing == ["ds_user_id"] or value.isdigit():
+            # A bare number is the ds_user_id shown in the Cookie header.
+            parsed["ds_user_id"] = value
+        if not parsed:
+            print(
+                f"{re}[!]{gr} could not read that value; skipping the extra "
+                "cookies.\n"
+            )
+            return cookies
+        merged = dict(cookies)
+        for name in ("ds_user_id", "mid"):
+            if parsed.get(name):
+                merged[name] = parsed[name]
+        stored = [name for name in ("ds_user_id", "mid") if merged.get(name)]
+        if stored:
+            print(f"{gr}[+]{nu} also storing {', '.join(stored)}")
+        return merged
+
     def _prompt_for_cookies(self):
         """Ask for sessionid and csrftoken until they work; False if cancelled."""
         if not self.interactive:
@@ -1097,6 +1158,7 @@ class main:
 
             self._prompts += 1
             cookies = self._ask_csrftoken(cookies)
+            cookies = self._ask_extra_cookies(cookies)
             self._set_cookies(cookies)
 
             if status == "valid":

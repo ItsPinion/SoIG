@@ -609,7 +609,7 @@ class LoginPromptTests(BaseTestCase):
         ), mock.patch.object(
             api.main, "_session_status", side_effect=lambda: next(statuses)
         ), mock.patch(
-            "api.api._read_prompt", side_effect=["wrong", "right", ""]
+            "api.api._read_prompt", side_effect=["wrong", "right", "", ""]
         ):
             ig = self.new_main(user="prottoy.raha.r", interactive=True)
 
@@ -659,7 +659,7 @@ class LoginPromptTests(BaseTestCase):
             api.main, "_fetch_profile", side_effect=fetch
         ), mock.patch.object(
             api.main, "_session_status", return_value=("unknown", "timed out")
-        ), mock.patch("api.api._read_prompt", side_effect=["maybe", ""]):
+        ), mock.patch("api.api._read_prompt", side_effect=["maybe", "", ""]):
             ig = self.new_main(user="prottoy.raha.r", interactive=True)
         self.assertEqual(ig.output["followers"], "120")
         self.assertEqual(len(fetches), 2)
@@ -755,19 +755,56 @@ class SavedSessionTests(BaseTestCase):
         with mock.patch.object(
             api.main, "_session_status", side_effect=lambda: next(statuses)
         ), mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=fresh", "newcsrf"]
+            "api.api._read_prompt", side_effect=["sessionid=fresh", "newcsrf", ""]
         ) as prompter:
             ig = self.make(interactive=True)
         self.assertEqual(ig.sessionid, "fresh")
         stored = api.load_session(self.path())
         self.assertEqual(stored["sessionid"], "fresh")
         self.assertEqual(stored["csrftoken"], "newcsrf")
-        self.assertEqual(prompter.call_count, 2)
+        self.assertEqual(prompter.call_count, 3)  # sessionid, csrftoken, extras
+
+    def test_login_asks_for_the_missing_companion_cookies(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ), mock.patch(
+            "api.api._read_prompt",
+            side_effect=["bare-session-id", "", "ds_user_id=42; mid=xyz"],
+        ) as prompter:
+            self.make(interactive=True, login=True)
+        stored = api.load_session(self.path())
+        self.assertEqual(stored["sessionid"], "bare-session-id")
+        self.assertEqual(stored["ds_user_id"], "42")
+        self.assertEqual(stored["mid"], "xyz")
+        asked = " ".join(call.args[0] for call in prompter.call_args_list)
+        self.assertIn("ds_user_id and mid", asked)
+
+    def test_a_bare_number_is_stored_as_ds_user_id(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ), mock.patch(
+            "api.api._read_prompt", side_effect=["bare", "", "4242"]
+        ):
+            self.make(interactive=True, login=True)
+        stored = api.load_session(self.path())
+        self.assertEqual(stored["ds_user_id"], "4242")
+
+    def test_a_complete_cookie_header_skips_the_extra_prompt(self):
+        header = "sessionid=a; csrftoken=b; ds_user_id=1; mid=m"
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ), mock.patch(
+            "api.api._read_prompt", side_effect=[header]
+        ) as prompter:
+            self.make(interactive=True, login=True)
+        self.assertEqual(prompter.call_count, 1)
+        stored = api.load_session(self.path())
+        self.assertEqual(stored["mid"], "m")
 
     def test_prompt_saves_sessionid_and_csrftoken(self):
         with mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch("api.api._read_prompt", side_effect=["sid-value", "csrf-value"]):
+        ), mock.patch("api.api._read_prompt", side_effect=["sid-value", "csrf-value", ""]):
             self.make(interactive=True, login=True)
         stored = api.load_session(self.path())
         self.assertEqual(stored["sessionid"], "sid-value")
@@ -778,7 +815,7 @@ class SavedSessionTests(BaseTestCase):
     def test_no_save_flag_keeps_disk_clean(self):
         with mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch("api.api._read_prompt", side_effect=["sid", ""]):
+        ), mock.patch("api.api._read_prompt", side_effect=["sid", "", ""]):
             self.make(interactive=True, save_cookies=False)
         self.assertEqual(api.load_session(self.path()), {})
 
@@ -796,7 +833,7 @@ class SavedSessionTests(BaseTestCase):
             handle.write("{not json")
         with mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch("api.api._read_prompt", side_effect=["fresh", ""]):
+        ), mock.patch("api.api._read_prompt", side_effect=["fresh", "", ""]):
             ig = self.make(interactive=True, login=True)
         self.assertEqual(ig.sessionid, "fresh")
 
@@ -816,7 +853,7 @@ class SavedSessionTests(BaseTestCase):
     def test_custom_session_file_is_used(self):
         with mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
-        ), mock.patch("api.api._read_prompt", side_effect=["sid", ""]):
+        ), mock.patch("api.api._read_prompt", side_effect=["sid", "", ""]):
             self.make(interactive=True, login=True, session_file="/tmp/other.json")
         # nothing written to the default location
         self.assertEqual(api.load_session(self.path()), {})
@@ -870,10 +907,10 @@ class UpgradeTests(BaseTestCase):
         with mock.patch.object(
             api.main, "_session_status", return_value=("valid", " (as @me)")
         ), mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=good; csrftoken=x"]
+            "api.api._read_prompt", side_effect=["sessionid=good; csrftoken=x", ""]
         ) as prompter:
             ig = self.meta_only(interactive=True)
-        prompter.assert_called_once()
+        self.assertEqual(prompter.call_count, 2)  # cookies + extras
         self.assertTrue(ig._session_verified)
         self.assertEqual(ig.sessionid, "good")
         self.assertEqual(ig.session.cookies.get_dict().get("csrftoken"), "x")
@@ -914,7 +951,7 @@ class UpgradeTests(BaseTestCase):
         ), mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
         ), mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=good", ""]
+            "api.api._read_prompt", side_effect=["sessionid=good", "", ""]
         ):
             ig = self.new_main(user="_thessb17_", interactive=True)
         self.assertFalse(ig.limited_data)
@@ -931,10 +968,10 @@ class UpgradeTests(BaseTestCase):
         with mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
         ), mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=good", "csrf"]
+            "api.api._read_prompt", side_effect=["sessionid=good", "csrf", ""]
         ) as prompter:
             ig = self.make(login=True, interactive=True)
-        self.assertEqual(prompter.call_count, 2)  # sessionid + csrftoken
+        self.assertEqual(prompter.call_count, 3)  # sessionid + csrftoken + extras
         self.assertTrue(ig._session_verified)
         self.assertEqual(ig.session.cookies.get_dict().get("csrftoken"), "csrf")
 
@@ -1204,7 +1241,7 @@ class EnvironmentWarningTests(BaseTestCase):
         ), contextlib.redirect_stdout(out):
             self.make()
         text = out.getvalue()
-        self.assertIn("only the sessionid is saved", text)
+        self.assertIn("the saved session has no 'ds_user_id' and 'mid'", text)
         self.assertIn("whole Cookie header", text)
 
     def test_complete_saved_session_is_not_flagged(self):
@@ -1416,10 +1453,10 @@ class MetadataFallbackTests(BaseTestCase):
         ), mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
         ), mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=good", ""]
+            "api.api._read_prompt", side_effect=["sessionid=good", "", ""]
         ) as prompter:
             ig = self.new_main(user="prottoy.raha.r", interactive=True)
-        self.assertEqual(prompter.call_count, 2)
+        self.assertEqual(prompter.call_count, 3)
         self.assertEqual(ig.sessionid, "good")
 
     def test_no_retry_by_default(self):
@@ -1674,18 +1711,18 @@ class ThrottlingTests(BaseTestCase):
                 api._read_prompt("sessionid: ")
 
     def test_no_more_than_three_prompts(self):
-        answers = ["a", "b", "c", "d"]
         with mock.patch.object(
             api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
         ), mock.patch.object(
             api.main, "_session_status", return_value=("unknown", "no network")
         ), mock.patch(
-            "api.api._read_prompt", side_effect=["a", "", "b", "", "c", "", "d", ""]
+            "api.api._read_prompt",
+            side_effect=["a", "", "", "b", "", "", "c", "", "", "d", ""],
         ) as prompter:
             with self.assertRaises(api.InstagramError):
                 self.new_main(user="prottoy.raha.r", interactive=True)
         # three sessionid attempts (plus the csrftoken asks) at most
-        self.assertLessEqual(prompter.call_count, 8)
+        self.assertLessEqual(prompter.call_count, 12)
 
     def test_warm_up_receives_csrf_and_sends_it(self):
         calls = []
