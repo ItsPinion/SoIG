@@ -132,7 +132,9 @@ clients whose TLS fingerprint is not a browser. SoIG uses
 [`curl_cffi`](https://pypi.org/project/curl-cffi/) to impersonate Chrome whenever
 it is installed (it is in `requirements.txt`); disable it with
 `--no-impersonate` if needed. If only the OpenGraph metadata could be read, SoIG
-says so and the bio, posts and tags are unavailable.
+says so and offers to log in: paste a `sessionid` / `Cookie` header and it
+fetches the full profile; press Enter to continue with just the public numbers.
+Use `--login` to be asked for cookies before scraping at all.
 
 ```sh
 $ pip install curl_cffi        # or: pip install -r requirements.txt
@@ -167,6 +169,10 @@ A simple workflow of command used to run SoIG with a Description.
 | `-p` , `--postscrap`                  | scrape all uploaded images info.                          |
 | `-s` , `--savedata`                   | save data to file ( save profile pic, info , post info ). |
 | `-t` , `--tagscrap`                   | list all used tags (the five most used are shown by default). |
+| `--login`                             | ask for an Instagram `sessionid` before scraping.            |
+| `--proxy PROXY`                       | route requests through an HTTP(S) proxy (or set `IG_PROXY`). |
+| `--retry-wait SECONDS`                | wait and retry once after a 429 (or set `IG_RETRY_WAIT`).    |
+| `--no-impersonate`                    | disable browser TLS impersonation (`curl_cffi`).             |
 
 ## Running the tests
 

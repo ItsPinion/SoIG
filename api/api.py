@@ -397,6 +397,7 @@ class main:
         impersonate=None,
         retry_wait=0,
         retries=1,
+        login=False,
     ):
         self.user = user.strip().lstrip("@").rstrip("/")
         self.base_dir = os.getcwd()
@@ -433,6 +434,7 @@ class main:
         self._provided_cookies = _parse_cookie_input(
             sessionid if sessionid is not None else os.environ.get("IG_SESSIONID", "")
         )
+        self.force_login = login
         self.get_profile()
 
     def _new_session(self, impersonate=None, proxy=None):
@@ -649,22 +651,20 @@ class main:
                 )
                 time.sleep(wait)
 
-    def _prompt_for_sessionid(self, error):
-        """Ask for a sessionid until it is accepted; raise ``error`` to cancel."""
+    def _prompt_for_cookies(self):
+        """Ask for a cookie header until it is accepted; False if cancelled."""
         if not self.interactive:
-            raise error
+            return False
 
-        print()
-        print(f"{re}[!]{gr} {LOGIN_HELP}\n")
         while True:
             try:
                 value = getpass.getpass(f"{gr}sessionid{nu}: ")
             except (EOFError, KeyboardInterrupt):
                 print()
-                raise error from None
+                return False
 
             if not value.strip():
-                raise error from None
+                return False
 
             cookies = _parse_cookie_input(value)
             if not cookies.get("sessionid"):
@@ -679,24 +679,39 @@ class main:
             if status == "valid":
                 self._session_verified = True
                 self._prompts += 1
-                extra = (
-                    f" | {len(cookies)} cookies" if len(cookies) > 1 else ""
-                )
+                extra = f" | {len(cookies)} cookies" if len(cookies) > 1 else ""
                 print(f"{gr}[+]{nu} sessionid works{detail}{extra}\n")
-                return
+                return True
             if status == "unknown":
                 self._prompts += 1
                 print(
                     f"{re}[!]{gr} could not verify the sessionid ({detail}); "
                     "trying it anyway.\n"
                 )
-                return
+                return True
 
             print(
                 f"{re}[!]{gr} that sessionid does not work ({detail}). "
                 "Please try again, or press Enter to cancel.\n"
             )
             self._set_cookies({})
+
+    def _prompt_for_sessionid(self, error):
+        """Ask for a sessionid until it is accepted; raise ``error`` to cancel."""
+        if not self.interactive:
+            raise error
+
+        print()
+        print(f"{re}[!]{gr} {LOGIN_HELP}\n")
+        if not self._prompt_for_cookies():
+            raise error from None
+
+    def offer_login(self):
+        """Let the user log in before scraping (--login)."""
+        if self.sessionid:
+            return
+        print(f"\n{re}[!]{gr} {LOGIN_HELP}\n")
+        self._prompt_for_cookies()
 
     @staticmethod
     def _check_status(response, source):
@@ -1095,7 +1110,15 @@ class main:
     def get_profile(self):
         extra.write(f"\n{gr}[+]{nu} getting profile ...")
         self._use_provided_sessionid()
+        if self.force_login:
+            self.offer_login()
         self.p_data = self._fetch_profile_with_login()
+        if self.limited_data:
+            self._upgrade_limited_profile()
+        return self._apply_profile()
+
+    def _apply_profile(self):
+        """Derive the output, posts and tags from ``self.p_data``."""
         self.is_private = _as_bool(self.p_data.get("is_private"))
         self.profile_pic_url = (
             self.p_data.get("profile_pic_url_hd")
@@ -1305,6 +1328,35 @@ class main:
     def print_data(self):
         self._extracted_from_print_data_2()
         self._warn_limited_data()
+
+    def _upgrade_limited_profile(self):
+        """Offer a login when Instagram only exposed the public metadata."""
+        if self._session_verified or not self.interactive:
+            return
+
+        print(
+            f"\n{re}[!]{gr} Instagram only returned the public profile metadata "
+            "because this run is not logged in (bio, posts and tags are hidden)."
+        )
+        print(
+            "Paste a sessionid / Cookie header to fetch the full profile, "
+            "or press Enter to keep the public numbers."
+        )
+        if not self._prompt_for_cookies():
+            return
+
+        try:
+            profile = self._fetch_profile()
+        except InstagramError as exc:
+            print(f"{re}[!]{gr} could not fetch the full profile: {exc}\n")
+            return
+
+        self.p_data = profile
+        self.limited_data = False
+        self._feed_items = {}
+        self._user_id = None
+        self.posts_error = None
+        print(f"{gr}[+]{nu} full profile available\n")
 
     def _warn_limited_data(self):
         if self.limited_data and not self._warned_limited:

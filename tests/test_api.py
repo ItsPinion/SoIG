@@ -511,6 +511,101 @@ class LoginPromptTests(BaseTestCase):
             self.assertEqual(self.make()._session_status(), ("valid", ""))
 
 
+META_HTML = (
+    '<html><head>'
+    '<meta property="og:title" '
+    'content="Thess B (@_thessb17_) • Instagram photos" />'
+    '<meta property="og:description" content="1,234 Followers, 56 Following, '
+    '78 Posts - See Instagram photos and videos from Thess B (@_thessb17_)" />'
+    '<meta property="og:image" content="https://cdn.example/avatar.jpg" />'
+    "</head><body></body></html>"
+)
+
+
+class UpgradeTests(BaseTestCase):
+
+    def meta_only(self, **kwargs):
+        """A run whose only working source is the OpenGraph metadata."""
+        def fake_get(url, **kwargs):
+            if url == api.PROFILE_URL.format(username="_thessb17_"):
+                return FakeResponse(text=META_HTML)
+            return FakeResponse(status_code=429)
+
+        with mock.patch.object(api.main, "_get", side_effect=fake_get):
+            return api.main(user="_thessb17_", **kwargs)
+
+    def test_offers_login_when_only_metadata_is_available(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", " (as @me)")
+        ), mock.patch(
+            "api.api.getpass.getpass", side_effect=["sessionid=good; csrftoken=x"]
+        ) as prompter:
+            ig = self.meta_only(interactive=True)
+        prompter.assert_called_once()
+        self.assertTrue(ig._session_verified)
+        self.assertEqual(ig.sessionid, "good")
+        self.assertEqual(ig.session.cookies.get_dict().get("csrftoken"), "x")
+
+    def test_declining_upgrade_keeps_metadata(self):
+        with mock.patch("api.api.getpass.getpass", side_effect=[""]):
+            ig = self.meta_only(interactive=True)
+        self.assertEqual(ig.output["followers"], "1234")
+        self.assertTrue(ig.limited_data)
+
+    def test_upgrade_replaces_partial_profile(self):
+        def fake_get(url, **kwargs):
+            if url == api.PROFILE_URL.format(username="_thessb17_"):
+                return FakeResponse(text=META_HTML)
+            if url == api.WEB_PROFILE_INFO_URL:
+                if "sessionid=good" in str(getattr(api.main, "_cookies", "")):
+                    return FakeResponse(payload={"data": {"user": dict(USER, username="_thessb17_")}})
+                return FakeResponse(status_code=429)
+            return FakeResponse(status_code=429)
+
+        real_get = api.main._get
+        state = {"logged_in": False}
+        original_set_cookies = api.main._set_cookies
+
+        def set_cookies(instance, cookies):
+            original_set_cookies(instance, cookies)
+            state["logged_in"] = bool(cookies.get("sessionid"))
+
+        def fake_get_bound(instance, url, **kwargs):
+            if url == api.WEB_PROFILE_INFO_URL and state["logged_in"]:
+                return FakeResponse(
+                    payload={"data": {"user": dict(USER, username="_thessb17_")}}
+                )
+            return fake_get(url, **kwargs)
+
+        with mock.patch.object(api.main, "_get", fake_get_bound), mock.patch.object(
+            api.main, "_set_cookies", set_cookies
+        ), mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ), mock.patch(
+            "api.api.getpass.getpass", side_effect=["sessionid=good"]
+        ):
+            ig = api.main(user="_thessb17_", interactive=True)
+        self.assertFalse(ig.limited_data)
+        self.assertEqual(ig.output["followers"], "120")
+        self.assertEqual(ig.output["bio"], "line one, line two")
+
+    def test_no_offer_when_not_interactive(self):
+        with mock.patch("api.api.getpass.getpass") as prompter:
+            ig = self.meta_only(interactive=False)
+        prompter.assert_not_called()
+        self.assertTrue(ig.limited_data)
+
+    def test_force_login_prompts_up_front(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ), mock.patch(
+            "api.api.getpass.getpass", side_effect=["sessionid=good"]
+        ) as prompter:
+            ig = self.make(login=True, interactive=True)
+        prompter.assert_called_once()
+        self.assertTrue(ig._session_verified)
+
+
 class MetadataFallbackTests(BaseTestCase):
     META_HTML = (
         '<html><head>'
@@ -524,7 +619,7 @@ class MetadataFallbackTests(BaseTestCase):
 
     def test_profile_page_metadata_is_used_when_payload_is_stripped(self):
         with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(text=self.META_HTML)
+            api.main, "_get", return_value=FakeResponse(text=META_HTML)
         ):
             ig = api.main(user="_thessb17_", interactive=False)
         self.assertEqual(ig.output["followers"], "1234")
@@ -537,13 +632,13 @@ class MetadataFallbackTests(BaseTestCase):
 
     def test_metadata_for_another_account_is_rejected(self):
         with mock.patch.object(
-            api.main, "_get", return_value=FakeResponse(text=self.META_HTML)
+            api.main, "_get", return_value=FakeResponse(text=META_HTML)
         ):
             with self.assertRaises(api.InstagramError):
                 self.make(username="someone_else")._fetch_from_html()
 
     def test_abbreviated_counts(self):
-        html = self.META_HTML.replace(
+        html = META_HTML.replace(
             "1,234 Followers, 56 Following, 78 Posts",
             "1.2M Followers, 3K Following, 9.5B Posts",
         ).replace("@_thessb17_", "@prottoy.raha.r")
