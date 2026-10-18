@@ -1816,12 +1816,20 @@ class main:
             or self.p_data.get("profile_pic_url")
             or ""
         )
-        if self.is_private:
+        self.posts = self._load_posts()
+        if self.is_private and not self.posts:
             self.output = self._profile_details()
-            print(f"{re}[!]{gr} private profile can't scrap data !\n")
+            self._explain_private_profile()
             return {}
 
-        self.posts = self._load_posts()
+        if self.is_private:
+            # The page we could read was the logged-out one, which always
+            # looks private. If the session follows the account, the feed
+            # still answers with its posts and the profile is readable.
+            self._step(
+                f"posts: private account, but this session reads "
+                f"{len(self.posts)} posts, so it follows it"
+            )
         self.output = self._profile_details()
 
         tags = []
@@ -2177,6 +2185,31 @@ class main:
             )
             self._warned_limited = True
 
+    def _explain_private_profile(self):
+        print(
+            f"{re}[!]{gr} @{self.user} is private and Instagram returned no "
+            "posts for it.\n"
+            "    A private profile is readable only when the logged-in account "
+            "follows it and the follow request was accepted.\n"
+        )
+        if not self.sessionid:
+            print(
+                f"    This run has no session: python3 main.py -u {self.user} "
+                "--login\n"
+            )
+        elif "ds_user_id" not in (self._stored_session or {}):
+            print(
+                "    Your saved session only has a sessionid. Run --login and "
+                "paste the whole Cookie header\n"
+                "    (sessionid, csrftoken, ds_user_id, mid) so Instagram can "
+                "see who is asking.\n"
+            )
+        else:
+            print(
+                "    If you do follow it, Instagram is refusing the feed for "
+                "this account/IP; retry later or use --proxy.\n"
+            )
+
     def _warn_posts_error(self):
         if self.posts_error and not self._warned_posts_error:
             print(f"{re}[!]{gr} could not load posts: {self.posts_error}\n")
@@ -2194,8 +2227,8 @@ class main:
         os.chdir(path)
 
     def scrap_uploads(self):
-        if self.is_private:
-            print(f"{re}[!]{gr} private profile can't scrap data !\n")
+        if self.is_private and not self.posts:
+            self._explain_private_profile()
             return 1
 
         if not self.posts:

@@ -211,6 +211,20 @@ them, so an empty list is explained rather than mysterious:
 [step] tags: none of the 12 captions contain a hashtag
 ```
 
+#### Private profiles
+
+A private profile is readable only while the logged-in account follows it and
+the follow request has been accepted. SoIG therefore does not refuse a private
+account up front: it asks Instagram's feed, and only reports the profile as
+unreadable when no posts come back.
+
+```text
+[step] posts: private account, but this session reads 12 posts, so it follows it
+```
+
+If nothing comes back, the run explains what to fix (log in, or paste the whole
+Cookie header, or retry later).
+
 #### Saved sessions
 
 Instead of pasting one long string, SoIG asks for the two values it needs:

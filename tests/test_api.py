@@ -120,12 +120,55 @@ class ProfileTests(BaseTestCase):
         self.assertEqual(ig.output["business category"], "")
         self.assertEqual(ig.tags, {})
 
-    def test_private_profile(self):
-        ig = self.make(dict(USER, is_private=True), username="secret")
+    PRIVATE_USER = {
+        key: value
+        for key, value in USER.items()
+        if key != "edge_owner_to_timeline_media"
+    }
+
+    def test_private_profile_without_posts_explains_itself(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ig = self.make(
+                dict(self.PRIVATE_USER, is_private=True), username="secret"
+            )
+            self.assertEqual(ig.tags, {})
+            self.assertEqual(ig.scrap_uploads(), 1)
+        text = out.getvalue()
         self.assertTrue(ig.is_private)
         self.assertEqual(ig.output["private"], "True")
-        self.assertEqual(ig.tags, {})
-        self.assertEqual(ig.scrap_uploads(), 1)
+        self.assertIn("is private and Instagram returned no posts", text)
+        self.assertIn("follows it", text)
+
+    def test_private_profile_is_readable_when_the_session_follows_it(self):
+        ig = self.make(
+            dict(self.PRIVATE_USER, is_private=True),
+            feed=MODERN_FEED,
+            username="secret",
+        )
+        self.assertTrue(ig.is_private)
+        self.assertEqual(len(ig.posts), 2)
+        self.assertEqual(ig.tags, {"modern": 2, "osint": 1})
+        self.assertEqual(ig.scrap_uploads(), None)
+
+    def test_private_message_mentions_the_session_when_missing(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.make(
+                dict(self.PRIVATE_USER, is_private=True), username="secret"
+            )
+        self.assertIn("--login", out.getvalue())
+
+    def test_private_message_mentions_the_full_cookie_header(self):
+        api.save_session({"sessionid": "only"}, self.session_path)
+        out = io.StringIO()
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", " (logged in as @x)")
+        ), contextlib.redirect_stdout(out):
+            self.make(
+                dict(self.PRIVATE_USER, is_private=True), username="secret"
+            )
+        self.assertIn("whole Cookie header", out.getvalue())
 
     def test_extract_hash_tags_is_case_insensitive_and_strips_punctuation(self):
         self.assertEqual(
