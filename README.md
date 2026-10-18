@@ -134,6 +134,17 @@ sessionid SoIG prints a notice up front and falls back to the public metadata
 $ python3 main.py --username <username> --login
 ```
 
+#### Short flags
+
+Every option has a one-letter form, so a typical debug run is just:
+
+```sh
+$ python3 main.py -u <username> -l -d          # log in, then trace every step
+$ python3 main.py -u <username> -d -a -m 500   # trace, 500 posts
+```
+
+`-h` lists them all. The table at the end of this file has the full mapping.
+
 #### Step trace
 
 Every run prints a `[step]` line for each stage, so a bad result can be traced
@@ -175,9 +186,9 @@ By default the first page of posts (up to 12) is loaded with the profile, which
 keeps a run to a couple of requests. To walk the whole timeline:
 
 ```sh
-$ python3 main.py --username <username> --all-posts            # every post
-$ python3 main.py --username <username> --all-posts --max-posts 200
-$ python3 main.py --username <username> -t --all-posts         # tags from every caption
+$ python3 main.py --username <username> -a                    # every post
+$ python3 main.py --username <username> -a -m 200             # first 200 posts
+$ python3 main.py --username <username> -t -a                 # tags from every caption
 ```
 
 SoIG follows the feed's `end_cursor` one page at a time (12 posts per request,
@@ -191,8 +202,8 @@ is throttled:
 [step] posts: collected 8274 posts in 690 pages
 ```
 
-For 8k posts that is roughly 690 requests and 12 minutes - use `--max-posts` to
-sample a smaller slice.
+For 8k posts that is roughly 690 requests and 12 minutes - use `-m/--max-posts`
+to sample a smaller slice.
 
 Use:
 
@@ -304,17 +315,18 @@ A simple workflow of command used to run SoIG with a Description.
 | `-p` , `--postscrap`                  | scrape all uploaded images info.                          |
 | `-s` , `--savedata`                   | save data to file ( save profile pic, info , post info ). |
 | `-t` , `--tagscrap`                   | list all used tags (the five most used are shown by default). |
-| `--login`                             | ask for an Instagram `sessionid` before scraping.            |
-| `--proxy PROXY`                       | route requests through an HTTP(S) proxy.                     |
-| `--retry-wait SECONDS`                | wait and retry once after a 429.                             |
-| `--no-impersonate`                    | disable browser TLS impersonation (`curl_cffi`).             |
-| `--debug`                             | show each profile source that was tried and why it failed.   |
-| `--dump-page PATH`                    | save the profile page HTML for inspection.                   |
-| `--all-posts`                         | page through the whole timeline.                             |
-| `--max-posts N`                       | with `--all-posts`, stop after N posts.                      |
-| `--session-file PATH`                 | where saved cookies live.                                    |
-| `--no-save-session`                   | do not save the sessionid/csrftoken to disk.                 |
-| `--forget-session`                    | delete the saved sessionid/csrftoken and exit.               |
+| `-l`, `--login`                       | ask for an Instagram `sessionid` before scraping.            |
+| `-x`, `--proxy PROXY`                 | route requests through an HTTP(S) proxy.                     |
+| `-w`, `--retry-wait SECONDS`          | wait and retry once after a 429.                             |
+| `-i`, `--no-impersonate`              | disable browser TLS impersonation (`curl_cffi`).             |
+| `-d`, `--debug`                       | show each profile source that was tried and why it failed.   |
+| `-D`, `--dump-page PATH`              | save the profile page HTML for inspection.                   |
+| `-I`, `--inspect-page PATH`            | describe a saved page HTML and exit.                         |
+| `-a`, `--all-posts`                   | page through the whole timeline.                             |
+| `-m`, `--max-posts N`                 | with `--all-posts`, stop after N posts.                      |
+| `-f`, `--session-file PATH`           | where saved cookies live.                                    |
+| `-n`, `--no-save-session`             | do not save the sessionid/csrftoken to disk.                 |
+| `-F`, `--forget-session`              | delete the saved sessionid/csrftoken and exit.               |
 
 ## Running the tests
 
