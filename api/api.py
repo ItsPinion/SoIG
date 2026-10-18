@@ -2099,13 +2099,10 @@ class main:
         }
 
     def print_data_(self):
+        """The default profile output; tags are only shown with -t."""
         self._extracted_from_print_data_2()
         self._warn_limited_data()
         self._warn_posts_error()
-        print(f"{gr}[+]{nu} most used user tags : \n")
-        for key, value in collections.Counter(self.tags).most_common(5):
-            print(f"{gr}{key:<17} : {nu}{value}")
-        print("")
 
     def print_data(self):
         self._extracted_from_print_data_2()

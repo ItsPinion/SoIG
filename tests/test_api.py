@@ -185,6 +185,25 @@ class ProfileTests(BaseTestCase):
         self.assertIn("instagram.com/p/abc123", text)
         self.assertIn("#modern #osint #modern", text)
 
+    def test_default_output_has_no_tag_section(self):
+        ig = self.make(MODERN_USER, feed=MODERN_FEED)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ig.print_data_()
+        text = out.getvalue()
+        self.assertIn("username", text)
+        self.assertNotIn("most used user tags", text)
+        self.assertNotIn("user uploads tags", text)
+        self.assertNotRegex(text, r"modern\s+:")
+
+    def test_tag_flag_output_has_the_tag_section(self):
+        ig = self.make(MODERN_USER, feed=MODERN_FEED)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ig.print_data()
+            ig.most_common_tags()
+        self.assertIn("user uploads tags", out.getvalue())
+
     def test_most_common_tags_explains_an_empty_list(self):
         feed = [{"node": {"caption": {"text": "no tags here"}}}]
         ig = self.make(MODERN_USER, feed=feed)

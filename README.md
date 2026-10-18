@@ -10,7 +10,7 @@ The Instagram OSINT Tool gets a range of information from an Instagram account t
 
 - **profile** : Username, Profile Name, URL, Followers, Following, Number of Posts, Bio, Profile Picture URL, Is Business Account , Connected to a FB account , External URL, Joined Recently , Business Category Name, Is private , Is Verified.
 
-- **tags** : most used , and by `-t` all used tags.
+- **tags** : only with `-t`, which lists every tag and its count.
 
 - **posts** : accessability caption, location, timestamp, comments disabled, Caption, picture url.
 
@@ -314,7 +314,7 @@ A simple workflow of command used to run SoIG with a Description.
 | `-u` USERNAME , `--username` USERNAME | username of account to scan.                              |
 | `-p` , `--postscrap`                  | scrape all uploaded images info.                          |
 | `-s` , `--savedata`                   | save data to file ( save profile pic, info , post info ). |
-| `-t` , `--tagscrap`                   | list all used tags (the five most used are shown by default). |
+| `-t` , `--tagscrap`                   | list all used tags (hidden otherwise).                        |
 | `-l`, `--login`                       | ask for an Instagram `sessionid` before scraping.            |
 | `-x`, `--proxy PROXY`                 | route requests through an HTTP(S) proxy.                     |
 | `-w`, `--retry-wait SECONDS`          | wait and retry once after a 429.                             |
