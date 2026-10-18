@@ -299,7 +299,7 @@ def cli(argv=None):
     # Colour is a convenience for humans on a terminal, never for pipes/logs.
     set_color(not args["no_color"] and sys.stdout.isatty())
     set_quiet(args["quiet"])
-    # --debug shows the full [step] trace, so the spinner would only fight it.
+    # --debug shows the full [step] trace, so the progress line would only fight it.
     set_progress(not args["debug"])
 
     json_path = args["json"]

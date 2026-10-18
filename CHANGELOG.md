@@ -15,14 +15,16 @@ the same code is available as the `soig` command.
 - `pyproject.toml` (PEP 621) with pinned dependencies, a `soig` console script,
   optional `dev` extras, ruff and coverage configuration.
 - `-V/--version`.
-- `-q/--quiet` for scripted runs (no spinner, bar or banner).
+- `-q/--quiet` for scripted runs (no progress line or banner).
 - `-c/--no-color`; colours are also disabled automatically when stdout is not a
   terminal.
 - `-j/--json PATH` to write the result as a machine-readable document;
   `-j -` writes only JSON to stdout so it can be piped to `jq`.
-- A one-line spinner while the profile is fetched and a determinate progress bar
-  while a timeline is walked. Both are silent off a terminal, so CI logs and
-  redirected output stay clean.
+- A single status line that names the current request: a sweeping highlight
+  while the profile is fetched, then a real progress bar with counts,
+  percentage, elapsed time and an ETA while a timeline is walked. Silent off a
+  terminal, so CI logs and redirected output stay clean. Terminals without
+  UTF-8 get an ASCII bar.
 - Distinct exit codes: `0` ok, `1` error, `2` usage, `3` login required,
   `4` rate limited, `130` interrupted.
 - Atomic session writes (temp file + `os.replace`) so a crash cannot truncate
@@ -33,7 +35,7 @@ the same code is available as the `soig` command.
 ### Changed
 
 - The `[step]` trace is printed **only** with `-d/--debug`. A normal run shows
-  the report plus the spinner/bar.
+  the report plus the progress line.
 - `-m/--max-posts` is independent of `-a/--all-posts`: `-m N` alone pages as far
   as needed and keeps exactly N posts, while `-a -m N` caps the walk at N.
 - `--login` and `--forget-session` (and `--inspect-page`) no longer require

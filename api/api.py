@@ -6,6 +6,7 @@ import json
 import os
 import random
 import re as regex
+import shutil
 import sys
 import threading
 import time
@@ -58,24 +59,33 @@ def set_quiet(enabled):
 
 
 class _Status:
-    """A one-line progress indicator for interactive terminals.
+    """A single-line progress bar for interactive terminals.
 
-    It stays completely silent when stderr is not a terminal (pipes, CI logs,
-    cron mail), when --quiet is used, and when --debug asks for the full step
-    trace instead. Nothing here ever touches stdout, so reports and JSON stay
-    clean.
+    Two forms share one line: a sweeping bar while an operation has no known
+    size (fetching the profile), and a determinate bar with counts, percentage
+    and ETA while a timeline is walked. The label always names what is
+    happening right now. It stays completely silent when stderr is not a
+    terminal (pipes, CI logs, cron mail), when --quiet is used, and when
+    --debug asks for the full step trace instead. Nothing here ever touches
+    stdout, so reports and JSON stay clean.
     """
 
-    SPINNER = "|/-\\"
-    BAR_WIDTH = 24
+    BAR_WIDTH = 32
+    LABEL_WIDTH = 26
+    TICK = 0.1
+    FULL = "█"
+    EMPTY = "░"
 
     def __init__(self):
         self.allowed = True
         self.active = False
-        self.text = ""
+        self.label = ""
+        self.done = 0
+        self.total = 0
         self.stream = sys.stderr
         self._frame = 0
         self._width = 0
+        self._started = 0.0
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._thread = None
@@ -88,55 +98,31 @@ class _Status:
         except (AttributeError, ValueError):
             return False
 
-    def start(self, text):
-        """Show ``text`` next to a spinner (no-op when not on a terminal)."""
+    def start(self, label, done=None, total=None):
+        """Start or update the line; ``done``/``total`` make it determinate."""
         if not self.enabled():
             return
         with self._lock:
-            self.text = text
+            self.label = str(label)
+            self.done = int(done or 0)
+            self.total = int(total or 0)
             if self.active:
-                # Redraw now so a fast update is never lost between ticks.
-                frame = self.SPINNER[self._frame % len(self.SPINNER)]
-                self._draw(f"{frame} {text}")
+                self._draw(*self._compose())
                 return
             self.active = True
+            self._started = time.monotonic()
+            self._frame = 0
             self._stop.clear()
-            # Draw once immediately so even a fast request shows the line.
-            self._draw(f"{self.SPINNER[0]} {text}")
+            self._draw(*self._compose())
             self._thread = threading.Thread(target=self._spin, daemon=True)
             self._thread.start()
 
-    def bar_text(self, done, total, label="posts"):
-        """The text of a determinate bar, e.g. ``posts [####----] 24/120``."""
-        filled = min(self.BAR_WIDTH, int(self.BAR_WIDTH * done / max(total, 1)))
-        empty = self.BAR_WIDTH - filled
-        return f"{label} [{'#' * filled}{'-' * empty}] {done}/{total}"
-
-    def bar(self, done, total, label="posts"):
-        """Show a determinate bar (or a spinner when the total is unknown)."""
+    def bar(self, done, total, label="Loading posts"):
+        """Show a determinate bar, or the sweeping form when total is unknown."""
         if not total:
-            self.start(f"loading {label}")
+            self.start(label)
             return
-        self.start(self.bar_text(done, total, label))
-
-    def _spin(self):
-        while not self._stop.wait(0.12):
-            with self._lock:
-                if not self.active:
-                    return
-                frame = self.SPINNER[self._frame % len(self.SPINNER)]
-                self._frame += 1
-                self._draw(f"{frame} {self.text}")
-
-    def _draw(self, line):
-        # Called with the lock held; pad over the previous, longer line.
-        pad = max(0, self._width - len(line))
-        try:
-            self.stream.write("\r" + line + " " * pad)
-            self.stream.flush()
-        except (OSError, ValueError):
-            return
-        self._width = len(line)
+        self.start(label, done=done, total=total)
 
     def stop(self):
         """Erase the line; safe to call at any time."""
@@ -155,7 +141,106 @@ class _Status:
             except (OSError, ValueError):
                 pass
             self._width = 0
-            self.text = ""
+            self.label = ""
+            self.done = 0
+            self.total = 0
+
+    # -- rendering -------------------------------------------------------
+    def _spin(self):
+        while not self._stop.wait(self.TICK):
+            with self._lock:
+                if not self.active:
+                    return
+                self._frame += 1
+                self._draw(*self._compose())
+
+    def _unicode(self):
+        encoding = (getattr(self.stream, "encoding", "") or "").lower()
+        return "utf" in encoding
+
+    def _bar_width(self, suffix=0):
+        # Leave room for "  label   bar   suffix" so the line never wraps.
+        try:
+            columns = shutil.get_terminal_size((80, 24)).columns
+        except OSError:
+            columns = 80
+        room = columns - self.LABEL_WIDTH - len(suffix) - 6
+        return max(8, min(self.BAR_WIDTH, room))
+
+    @staticmethod
+    def _clock(seconds):
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        minutes, rest = divmod(int(seconds), 60)
+        if minutes < 60:
+            return f"{minutes}m{rest:02d}s"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h{minutes:02d}m"
+
+    def _suffix(self, elapsed):
+        if not self.total:
+            return self._clock(elapsed)
+        percent = min(100, int(self.done * 100 / self.total))
+        text = f"{self.done}/{self.total} · {percent}% · {self._clock(elapsed)}"
+        if self.done and percent < 100:
+            remaining = elapsed * (self.total - self.done) / self.done
+            if remaining >= 1:
+                text += f" · ETA {self._clock(remaining)}"
+        return text
+
+    def _compose(self):
+        """Return ``(rendered line, visible length)``; called with the lock held."""
+        elapsed = max(0.0, time.monotonic() - self._started)
+        suffix = self._suffix(elapsed)
+        width = self._bar_width(suffix)
+        unicode_ok = self._unicode()
+        full = self.FULL if unicode_ok else "#"
+        empty = self.EMPTY if unicode_ok else "-"
+
+        if self.total:
+            filled = min(width, int(width * self.done / self.total))
+            cells = full * filled + empty * (width - filled)
+        else:
+            # A highlight sweeps left to right to show work is happening.
+            block = max(4, width // 3)
+            offset = (self._frame % (width + block)) - block
+            cells = "".join(
+                full if offset <= cell < offset + block else empty for cell in range(width)
+            )
+
+        if _Ansi.enabled:
+            bar = "".join(f"{gr}{cell}{nu}" if cell == full else cell for cell in cells)
+        else:
+            bar = cells
+
+        label = self.label
+        if len(label) > self.LABEL_WIDTH:
+            ellipsis = "…" if unicode_ok else "..."
+            label = label[: self.LABEL_WIDTH - len(ellipsis)] + ellipsis
+        line = f"  {label:<{self.LABEL_WIDTH}}  {bar}  {suffix}"
+        visible = 2 + self.LABEL_WIDTH + 2 + width + 2 + len(suffix)
+        return line, visible
+
+    def bar_text(self, done, total, label="Loading posts", elapsed=0.0):
+        """The plain determinate line (no colours), handy for tests."""
+        width = self.BAR_WIDTH
+        filled = min(width, int(width * done / max(total, 1)))
+        percent = min(100, int(done * 100 / max(total, 1)))
+        bar = self.FULL * filled + self.EMPTY * (width - filled)
+        return (
+            f"  {label:<{self.LABEL_WIDTH}}  {bar}  "
+            f"{done}/{total} · {percent}% · {self._clock(elapsed)}"
+        )
+
+    def _draw(self, line, visible):
+        # Called with the lock held; pad over the previous, longer line.
+        pad = max(0, self._width - visible)
+        try:
+            self.stream.write("\r" + line + " " * pad)
+            self.stream.flush()
+        except (OSError, ValueError):
+            return
+        self._width = visible
 
 
 _status = _Status()
@@ -845,7 +930,7 @@ class main:
             print(f"{cy}[debug]{nu} {message}")
 
     def _progress(self, text):
-        """Start or update the spinner; --debug shows the trace instead."""
+        """Start or update the progress line; --debug shows the trace instead."""
         if not self.debug:
             _status.start(text)
 
@@ -1905,7 +1990,7 @@ class main:
         if self.force_login:
             self.offer_login()
         self._step("session: " + ("set" if self.sessionid else "none (public data only)"))
-        self._progress(f"fetching @{self.user}")
+        self._progress(f"Fetching @{self.user}")
         try:
             self.p_data = self._fetch_profile_with_login()
         finally:
@@ -2165,7 +2250,7 @@ class main:
         The two flags are independent: -m alone pages up to N posts, and with -a
         it caps the walk at N. Trimming happens in ``_cap_posts``.
         """
-        _status.start("loading posts")
+        _status.start("Loading posts")
         try:
             return self._walk_feed_edges()
         finally:
@@ -2453,14 +2538,17 @@ class main:
         # DOWNLOAD PROFILE PICTURE
         if self.profile_pic_url:
             time.sleep(1)
+            self._progress("Downloading avatar")
             try:
                 r = self._get(
                     self.profile_pic_url,
                     headers={"User-Agent": random.choice(useragent)},
                 )
             except InstagramError as exc:
+                _status.stop()
                 print(f"{re}[!]{gr} could not download profile picture: {exc}")
             else:
+                _status.stop()
                 if r.status_code == 200:
                     with open("profile_pic.jpg", "wb") as f:
                         f.write(r.content)

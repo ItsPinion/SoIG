@@ -170,10 +170,10 @@ $ python3 main.py -u <username> -d -a -m 500   # trace, 500 posts
 
 | Mode | What you get |
 | ---- | ------------ |
-| default | profile report, plus posts with `-p` and tags with `-t`, plus a live spinner |
-| `-q`, `--quiet` | no spinner and no banner, only warnings and the report (for scripts) |
+| default | profile report, plus posts with `-p` and tags with `-t`, plus a live progress line |
+| `-q`, `--quiet` | no progress line and no banner, only warnings and the report (for scripts) |
 | `-c`, `--no-color` | no ANSI colours; also automatic when stdout is not a terminal |
-| `-d`, `--debug` | the full `[step]` trace instead of the spinner, with URLs and statuses |
+| `-d`, `--debug` | the full `[step]` trace instead of the progress line, with URLs and statuses |
 | `-j PATH`, `--json PATH` | the same result as JSON (`-j -` prints only JSON on stdout) |
 
 On success the JSON document has `tool`, `version`, `exit_code`, `scraped_at`,
@@ -198,14 +198,18 @@ $ python3 main.py -u <username> -p -j - | jq '.posts[].url'
 
 #### Progress and debugging
 
-A normal run keeps the terminal quiet: a one-line spinner shows the current
-request, and long timelines get a live progress bar (only on a terminal - pipes
-and log files stay clean):
+A normal run keeps the terminal quiet: one status line names the current
+request and, while a timeline is walked, turns into a real progress bar with
+counts, percentage, elapsed time and an ETA. It is only drawn on a terminal, so
+pipes and log files stay clean:
 
 ```text
-| fetching @headlines.ban
-posts [########----------------] 12/24
+  Fetching @headlines.ban     ░░░░██████████░░░░░░░░░░░░░░░░░░  1.4s
+  Loading posts               ████████████████░░░░░░░░░░░░░░░░  12/24 · 50% · 3.2s · ETA 3.2s
 ```
+
+While the size is unknown the highlight sweeps across the bar; terminals without
+UTF-8 get `#`/`-` instead of the block characters.
 
 Add `-d/--debug` to replace that with a `[step]` line for every stage, so a bad
 result can be traced to the request that caused it:
@@ -412,7 +416,7 @@ A simple workflow of command used to run SoIG with a Description.
 | `-f`, `--session-file PATH`           | where saved cookies live.                                    |
 | `-n`, `--no-save-session`             | do not save the sessionid/csrftoken to disk.                 |
 | `-F`, `--forget-session`              | delete the saved sessionid/csrftoken and exit (no `-u` needed). |
-| `-q`, `--quiet`                       | hide the spinner, progress bar and banner.                   |
+| `-q`, `--quiet`                       | hide the progress line and banner.                           |
 | `-c`, `--no-color`                    | no ANSI colours (automatic when piped).                      |
 | `-j`, `--json PATH`                   | also write the result as JSON (`-` prints it on stdout).     |
 | `-V`, `--version`                     | show the version and exit.                                   |

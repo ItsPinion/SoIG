@@ -1903,6 +1903,15 @@ class ProductionTests(BaseTestCase):
 
 
 class FakeTTY(io.StringIO):
+    encoding = "utf-8"
+
+    def isatty(self):
+        return True
+
+
+class FakeAsciiTTY(io.StringIO):
+    encoding = "cp1252"
+
     def isatty(self):
         return True
 
@@ -1924,7 +1933,22 @@ class ProgressTests(unittest.TestCase):
         api.set_quiet(False)
 
     def test_bar_text_is_determinate(self):
-        self.assertEqual(api._status.bar_text(6, 12), "posts [############------------] 6/12")
+        line = api._status.bar_text(6, 12, elapsed=3.0)
+        self.assertIn("6/12", line)
+        self.assertIn("50%", line)
+        self.assertIn("3.0s", line)
+        self.assertIn("\u2588" * 16 + "\u2591" * 16, line)
+
+    def test_pulse_moves_without_a_total(self):
+        api._status.start("Fetching @someone")
+        first = self.stream.getvalue()
+        self.assertIn("Fetching @someone", first)
+        api._status._frame = 10
+        with api._status._lock:
+            api._status._draw(*api._status._compose())
+        text = self.stream.getvalue()
+        self.assertIn("\u2591", text)
+        self.assertIn("\u2588", text)
 
     def test_status_draws_and_clears(self):
         api._status.start("fetching profile")
@@ -1933,6 +1957,34 @@ class ProgressTests(unittest.TestCase):
         api._status.stop()
         self.assertFalse(api._status.active)
         self.assertTrue(self.stream.getvalue().endswith("\r"))
+
+    def test_ascii_terminals_get_an_ascii_bar(self):
+        self.stream = FakeAsciiTTY()
+        api._status.stream = self.stream
+        api._status.start("Fetching @someone")
+        api._status._frame = 5
+        with api._status._lock:
+            api._status._draw(*api._status._compose())
+        text = self.stream.getvalue()
+        self.assertIn("#", text)
+        self.assertIn("-", text)
+        self.assertNotIn("\u2588", text)
+
+    def test_the_line_fits_an_eighty_column_terminal(self):
+        api.set_color(False)
+        try:
+            with mock.patch.object(
+                api.shutil, "get_terminal_size", return_value=os.terminal_size((80, 24))
+            ):
+                api._status.start("Loading posts", done=690, total=6900)
+                api._status._started -= 754.3
+                with api._status._lock:
+                    line, visible = api._status._compose()
+        finally:
+            api.set_color(True)
+        self.assertEqual(visible, len(line))
+        self.assertLessEqual(visible, 80)
+        self.assertIn("ETA", line)
 
     def test_status_is_silent_off_a_terminal(self):
         self.stream = io.StringIO()  # no isatty
