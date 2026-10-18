@@ -1822,6 +1822,14 @@ class main:
             if post["caption"]:
                 tags.extend(extra.extract_hash_tags(post["caption"]))
         self.tags = dict(collections.Counter(tags))
+        if self.debug and self.posts:
+            first = next((post for post in self.posts if post["caption"]), None)
+            if first is not None:
+                self._debug(f"first caption: {first['caption'][:300]}")
+                self._debug(
+                    "hashtags in it: "
+                    f"{extra.extract_hash_tags(first['caption'])}"
+                )
         captions = sum(1 for post in self.posts if post["caption"])
         if self.tags:
             self._step(
@@ -2152,9 +2160,18 @@ class main:
 
     def most_common_tags(self):
         self._warn_posts_error()
+        captions = sum(1 for post in self.posts if post["caption"])
         print(f"{gr}[+]{nu} user uploads tags : \n")
+        if not self.tags:
+            print(
+                f"{re}[!]{gr} no hashtags were found in the {captions} captions "
+                f"loaded from {len(self.posts)} posts.\n"
+                "    The tag list is built from post captions, so an account "
+                "that does not use #hashtags has none to count.\n"
+            )
+            return
         for key, value in collections.Counter(self.tags).most_common():
-            print(f"{gr}{key} : {nu}{value}")
+            print(f"{gr}{key:<17} : {nu}{value}")
 
     def save_data(self):
         self.make_dir()

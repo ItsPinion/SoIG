@@ -142,6 +142,26 @@ class ProfileTests(BaseTestCase):
         self.assertIn("instagram.com/p/abc123", text)
         self.assertIn("#modern #osint #modern", text)
 
+    def test_most_common_tags_explains_an_empty_list(self):
+        feed = [{"node": {"caption": {"text": "no tags here"}}}]
+        ig = self.make(MODERN_USER, feed=feed)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ig.most_common_tags()
+        text = out.getvalue()
+        self.assertIn("no hashtags were found in the 1 captions", text)
+        self.assertIn("does not use #hashtags", text)
+
+    def test_most_common_tags_lists_the_tags(self):
+        ig = self.make(MODERN_USER, feed=MODERN_FEED)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ig.most_common_tags()
+        text = out.getvalue()
+        self.assertIn("modern", text)
+        self.assertIn("osint", text)
+        self.assertNotIn("no hashtags were found", text)
+
     def test_tag_summary_step_is_printed(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
