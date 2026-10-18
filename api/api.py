@@ -43,11 +43,39 @@ IG_APP_ID = "936619743392459"
 FEED_DOC_ID = "9310670392322965"
 # PolarisProfilePageContentQuery: the query Instagram's own web client uses
 # for profile pages since web_profile_info started answering 400/429.
-PROFILE_DOC_IDS = (
-    "28036671149327607",
-    "27937681195819736",
-    "25980296051578533",
+PROFILE_QUERIES = (
+    (
+        "25980296051578533",
+        {
+            "id": None,
+            "render_surface": "PROFILE",
+            "__relay_internal__pv__PolarisCannesGuardianExperienceEnabledrelayprovider": True,
+            "__relay_internal__pv__PolarisCASB976ProfileEnabledrelayprovider": False,
+            "__relay_internal__pv__PolarisRepostsConsumptionEnabledrelayprovider": False,
+        },
+    ),
+    (
+        "28036671149327607",
+        {
+            "id": None,
+            "render_surface": "PROFILE",
+            "enable_integrity_filters": True,
+            "__relay_internal__pv__PolarisCannesGuardianExperienceEnabledrelayprovider": True,
+            "__relay_internal__pv__PolarisCASB976ProfileEnabledrelayprovider": False,
+            "__relay_internal__pv__PolarisWebSchoolsEnabledrelayprovider": False,
+        },
+    ),
+    (
+        "27937681195819736",
+        {
+            "id": None,
+            "render_surface": "PROFILE",
+            "__relay_internal__pv__PolarisCannesGuardianExperienceEnabledrelayprovider": True,
+            "__relay_internal__pv__PolarisCASB976ProfileEnabledrelayprovider": False,
+        },
+    ),
 )
+PROFILE_DOC_IDS = tuple(doc_id for doc_id, _ in PROFILE_QUERIES)
 IPHONE_USER_AGENT = (
     "Instagram 275.0.0.27.98 (iPhone14,5; iOS 17_4; en_US; en; scale=3.00; "
     "1170x2532; 458229237)"
@@ -647,11 +675,11 @@ class main:
             session.proxies.update({"http": proxy, "https": proxy})
         return session
 
-    def _get(self, url, **kwargs):
+    def _get(self, url, method="GET", **kwargs):
         kwargs.setdefault("timeout", REQUEST_TIMEOUT)
         self._last_url = url
         try:
-            response = self.session.get(url, **kwargs)
+            response = self.session.request(method, url, **kwargs)
         except Exception as exc:  # transport errors differ per backend
             self._last_status = None
             self._debug(f"GET {url} failed: {exc}")
@@ -816,6 +844,12 @@ class main:
             print(f"\n{gr}[+]{nu} sessionid works{detail}")
             if len(self._provided_cookies) > 1:
                 print(f"{gr}[+]{nu} using {len(self._provided_cookies)} cookies")
+            else:
+                print(
+                    f"{re}[!]{gr} only a sessionid was provided; the whole "
+                    "Cookie header also carries ds_user_id and mid, which some "
+                    "Instagram endpoints require."
+                )
             self._save_session(self._provided_cookies)
             return
         print()
@@ -1059,14 +1093,26 @@ class main:
         if response.status_code >= 400:
             raise InstagramError(f"the {source} returned HTTP {response.status_code}")
 
-    def _json_user(self, url, source, params=None, mobile=False, headers=None):
-        """GET a JSON endpoint and pull the user object out of the response."""
+    def _json_user(
+        self, url, source, params=None, mobile=False, headers=None, method="GET",
+        data=None,
+    ):
+        """Request a JSON endpoint and pull the user object out of the response."""
         response = self._get(
             url,
+            method=method,
             params=params,
-            headers=headers if headers is not None else self._api_headers(mobile=mobile),
+            data=data,
+            headers=(
+                headers if headers is not None else self._api_headers(mobile=mobile)
+            ),
         )
-        self._check_status(response, source)
+        try:
+            self._check_status(response, source)
+        except InstagramError:
+            text = (response.text or "")[:300].replace("\n", " ")
+            self._debug(f"{source} body: {text}")
+            raise
         try:
             payload = response.json()
         except ValueError:
@@ -1088,6 +1134,8 @@ class main:
             return user
 
         message = payload.get("message") if isinstance(payload, dict) else None
+        text = (response.text or "")[:300].replace("\n", " ")
+        self._debug(f"{source} body: {text}")
         if isinstance(payload, dict) and (
             payload.get("require_login") or "log" in str(message or "").lower()
         ):
@@ -1145,33 +1193,28 @@ class main:
         user_id = self._resolve_user_id()
         if not user_id:
             raise InstagramError("could not resolve the numeric user id")
-        variables = {
-            "id": user_id,
-            "username": self.user,
-            "render_surface": "PROFILE",
-            "enable_integrity_filters": True,
-            "__relay_internal__pv__PolarisCannesGuardianExperienceEnabledrelayprovider": True,
-            "__relay_internal__pv__PolarisCASB976ProfileEnabledrelayprovider": False,
-            "__relay_internal__pv__PolarisWebSchoolsEnabledrelayprovider": False,
-        }
         headers = {
             **self._session_headers(),
             "User-Agent": IPHONE_USER_AGENT,
             "X-IG-App-ID": IG_APP_ID,
-            "Accept": "*/*",
-            "Referer": f"https://www.instagram.com/{self.user}/",
+            "Referer": "https://www.instagram.com/",
+            "Accept-Language": "en-US,en;q=0.8",
         }
         problems = []
-        for doc_id in PROFILE_DOC_IDS:
+        for doc_id, template in PROFILE_QUERIES:
+            variables = dict(template, id=str(user_id))
             try:
                 return self._json_user(
                     GRAPHQL_URL,
                     "profile GraphQL",
+                    method="POST",
                     params={
                         "doc_id": doc_id,
                         "variables": json.dumps(variables, separators=(",", ":")),
+                        "server_timestamps": "true",
                     },
                     headers=headers,
+                    data="",
                 )
             except InstagramError as exc:
                 problems.append(f"{doc_id}: {exc}")
