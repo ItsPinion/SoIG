@@ -36,6 +36,7 @@ useragent = [
 ]
 
 REQUEST_TIMEOUT = 15
+HOME_URL = "https://www.instagram.com/"
 PROFILE_URL = "https://www.instagram.com/{username}/"
 WEB_PROFILE_INFO_URL = "https://www.instagram.com/api/v1/users/web_profile_info/"
 GRAPHQL_URL = "https://www.instagram.com/graphql/query/"
@@ -787,7 +788,7 @@ class main:
             return
         try:
             self._get(
-                "https://www.instagram.com/",
+                HOME_URL,
                 headers={
                     "Accept": (
                         "text/html,application/xhtml+xml,application/xml;q=0.9,"
@@ -907,12 +908,6 @@ class main:
             print(f"\n{gr}[+]{nu} sessionid works{detail}")
             if len(self._provided_cookies) > 1:
                 print(f"{gr}[+]{nu} using {len(self._provided_cookies)} cookies")
-            else:
-                print(
-                    f"{re}[!]{gr} only a sessionid was provided; the whole "
-                    "Cookie header also carries ds_user_id and mid, which some "
-                    "Instagram endpoints require."
-                )
             self._save_session(self._provided_cookies)
             return
         print()
@@ -947,15 +942,6 @@ class main:
                 f"\n{gr}[+]{nu} using the saved session{detail} "
                 f"({self.session_file})"
             )
-            missing = self._missing_extras(self._stored_session)
-            if missing:
-                names = " and ".join(f"'{name}'" for name in missing)
-                print(
-                    f"{re}[!]{gr} the saved session has no {names}; "
-                    "Instagram's web endpoints expect them.\n"
-                    f"    Run with --login and paste the whole Cookie header "
-                    "(or answer the follow-up prompt) to store them.\n"
-                )
             return
         if status == "invalid":
             print(
@@ -980,6 +966,14 @@ class main:
     def _save_session(self, cookies):
         if not self.save_cookies:
             return
+        # Instagram sets csrftoken and mid itself when instagram.com is
+        # loaded; keep them so later runs do not have to fetch them again.
+        merged = dict(cookies)
+        for name in COOKIE_NAMES:
+            value = self.session.cookies.get(name)
+            if value and not merged.get(name):
+                merged[name] = value
+        cookies = merged
         path = save_session(cookies, self.session_file)
         if path:
             print(f"{gr}[+]{nu} saved session to {path}")
@@ -1062,48 +1056,6 @@ class main:
             cookies = dict(cookies, csrftoken=value)
         return cookies
 
-    @staticmethod
-    def _missing_extras(cookies):
-        """Which companion cookies are still absent (ds_user_id, mid)."""
-        return [
-            name
-            for name in ("ds_user_id", "mid")
-            if not (cookies or {}).get(name)
-        ]
-
-    def _ask_extra_cookies(self, cookies):
-        """Ask for ds_user_id and mid one at a time, when they are missing.
-
-        Both come from the same browser Cookie header. They are optional,
-        because some endpoints work without them, but a bare sessionid leaves
-        Instagram very little to identify the browser with.
-        """
-        merged = dict(cookies)
-        stored = []
-        for name in self._missing_extras(cookies):
-            prompt = (
-                f"{gr}{name}{nu} (optional, from the same Cookie header): "
-            )
-            try:
-                value = _read_prompt(prompt)
-            except (EOFError, KeyboardInterrupt):
-                print()
-                break
-            value = (value or "").strip()
-            if not value:
-                continue
-            if value.lower().startswith("cookie:"):
-                value = value[7:].strip()
-            if value.lower().startswith(f"{name}="):
-                value = value.split("=", 1)[1].strip()
-            if not value:
-                continue
-            merged[name] = value
-            stored.append(name)
-        if stored:
-            print(f"{gr}[+]{nu} also storing {', '.join(stored)}")
-        return merged
-
     def _prompt_for_cookies(self):
         """Ask for sessionid and csrftoken until they work; False if cancelled."""
         if not self.interactive:
@@ -1141,7 +1093,6 @@ class main:
 
             self._prompts += 1
             cookies = self._ask_csrftoken(cookies)
-            cookies = self._ask_extra_cookies(cookies)
             self._set_cookies(cookies)
 
             if status == "valid":
@@ -2239,12 +2190,11 @@ class main:
                 f"    This run has no session: python3 main.py -u {self.user} "
                 "--login\n"
             )
-        elif "ds_user_id" not in (self._stored_session or {}):
+        elif not (self._stored_session or {}).get("csrftoken"):
             print(
-                "    Your saved session only has a sessionid. Run --login and "
-                "paste the whole Cookie header\n"
-                "    (sessionid, csrftoken, ds_user_id, mid) so Instagram can "
-                "see who is asking.\n"
+                "    Your saved session has no csrftoken. Run --login (or paste "
+                "the whole Cookie header)\n"
+                "    so Instagram sees a complete browser session.\n"
             )
         else:
             print(

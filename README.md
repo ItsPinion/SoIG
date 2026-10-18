@@ -243,16 +243,15 @@ Instead of pasting one long string, SoIG asks for the values it needs:
 ```text
 sessionid (or the whole Cookie header): …
 csrftoken (optional, press Enter to fetch it automatically): …
-ds_user_id (optional, from the same Cookie header): …
-mid (optional, from the same Cookie header): …
-[+] also storing ds_user_id, mid
 [+] sessionid works (logged in as @you)
 [+] saved session to /home/you/.config/SoIG/session.json
 ```
 
-`ds_user_id` and `mid` are asked for **one at a time**, and only when the pasted
-value did not already contain them. Paste the whole Cookie header once and
-neither question appears.
+`sessionid` is the cookie that actually identifies you; `csrftoken` is sent back
+with every GraphQL request as an `X-CSRFToken` header, so the prompt offers to
+fetch it for you (Instagram hands one out on any page load). The scraper never
+reads `ds_user_id` or `mid`, so it does not ask for them — it only stores them
+when Instagram set them by itself.
 
 Every cookie is stored as JSON with owner-only permissions (`0600`, folder
 `0700`) and reused automatically on later runs:
