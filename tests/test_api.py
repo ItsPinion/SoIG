@@ -843,6 +843,53 @@ class SavedSessionTests(BaseTestCase):
         self.assertEqual(api.load_session(self.path()), {})
 
 
+class LoginOnlyTests(BaseTestCase):
+    """--login on its own: no username, no profile, just a working session."""
+
+    def test_a_valid_stored_session_is_reported_without_prompting(self):
+        api.save_session({"sessionid": "saved", "csrftoken": "c"}, self.session_path)
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", " (as @me)")
+        ), mock.patch.object(api.main, "_fetch_profile") as fetch, mock.patch(
+            "api.api._read_prompt"
+        ) as prompter, contextlib.redirect_stdout(io.StringIO()) as out:
+            ig = api.main(
+                interactive=True,
+                session_file=self.session_path,
+                login_only=True,
+            )
+        prompter.assert_not_called()
+        fetch.assert_not_called()
+        self.assertEqual(ig.sessionid, "saved")
+        self.assertIn("already logged in", out.getvalue())
+
+    def test_an_expired_stored_session_is_replaced(self):
+        api.save_session({"sessionid": "old", "csrftoken": "c"}, self.session_path)
+        statuses = iter([("invalid", "HTTP 401"), ("valid", "")])
+        with mock.patch.object(
+            api.main, "_session_status", side_effect=lambda: next(statuses)
+        ), mock.patch.object(api.main, "_fetch_profile") as fetch, mock.patch(
+            "api.api._read_prompt", side_effect=["sessionid=fresh", "newcsrf"]
+        ):
+            api.main(
+                interactive=True,
+                session_file=self.session_path,
+                login_only=True,
+            )
+        fetch.assert_not_called()
+        stored = api.load_session(self.session_path)
+        self.assertEqual(stored["sessionid"], "fresh")
+        self.assertEqual(stored["csrftoken"], "newcsrf")
+
+    def test_without_a_session_the_login_test_raises(self):
+        with mock.patch("api.api._read_prompt", side_effect=EOFError),                 contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(api.InstagramError):
+                api.main(
+                    interactive=True,
+                    session_file=self.session_path,
+                    login_only=True,
+                )
+
 class SessionNoticeTests(BaseTestCase):
     def test_warns_when_no_session_is_set(self):
         out = io.StringIO()

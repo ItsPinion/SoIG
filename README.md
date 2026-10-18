@@ -134,6 +134,22 @@ sessionid SoIG prints a notice up front and falls back to the public metadata
 $ python3 main.py --username <username> --login
 ```
 
+`--login` also works **on its own**, without a username: it only checks or
+replaces the stored session and exits, so you can log in once and scrape any
+account afterwards:
+
+```sh
+$ python3 main.py --login          # log in and save the session
+$ python3 main.py -u someone -p    # later runs reuse it
+```
+
+If a saved session still works, that command just says so instead of asking for
+the same cookies again (`--forget-session` removes it first when you want to
+switch accounts). The same is true of the other actions that do not scrape
+anything: `--forget-session` and `--inspect-page` never ask for `--username`, and
+`--help` does not either. Every option that needs a profile (`-p`, `-s`, `-t`,
+`-a`, `-m`, `-D`) still requires `-u`.
+
 #### Short flags
 
 Every option has a one-letter form, so a typical debug run is just:
@@ -271,7 +287,8 @@ file:
 Manage it with:
 
 ```sh
-$ python3 main.py --username <username> --forget-session   # delete saved cookies
+$ python3 main.py --forget-session                     # delete saved cookies
+$ python3 main.py --login                              # log in, then exit
 $ python3 main.py --username <username> --no-save-session  # do not write them
 $ python3 main.py --username <username> --session-file ~/ig.json
 ```
@@ -317,22 +334,22 @@ A simple workflow of command used to run SoIG with a Description.
 | Usage                                 | Description                                               |
 | ------------------------------------- | --------------------------------------------------------- |
 | `-h` , `--help`                       | show this help message and exit.                          |
-| `-u` USERNAME , `--username` USERNAME | username of account to scan.                              |
+| `-u` USERNAME , `--username` USERNAME | username of account to scan (not needed with `-l`, `-F`, `-I`). |
 | `-p` , `--postscrap`                  | scrape all uploaded images info.                          |
 | `-s` , `--savedata`                   | save data to file ( save profile pic, info , post info ). |
 | `-t` , `--tagscrap`                   | list all used tags (hidden otherwise).                        |
-| `-l`, `--login`                       | ask for an Instagram `sessionid` before scraping.            |
+| `-l`, `--login`                       | log in before scraping; alone: log in and exit.              |
 | `-x`, `--proxy PROXY`                 | route requests through an HTTP(S) proxy.                     |
 | `-w`, `--retry-wait SECONDS`          | wait and retry once after a 429.                             |
 | `-i`, `--no-impersonate`              | disable browser TLS impersonation (`curl_cffi`).             |
 | `-d`, `--debug`                       | show each profile source that was tried and why it failed.   |
 | `-D`, `--dump-page PATH`              | save the profile page HTML for inspection.                   |
-| `-I`, `--inspect-page PATH`            | describe a saved page HTML and exit.                         |
+| `-I`, `--inspect-page PATH`            | describe a saved page HTML and exit (no `-u` needed).        |
 | `-a`, `--all-posts`                   | page through the whole timeline.                             |
 | `-m`, `--max-posts N`                 | with `--all-posts`, stop after N posts.                      |
 | `-f`, `--session-file PATH`           | where saved cookies live.                                    |
 | `-n`, `--no-save-session`             | do not save the sessionid/csrftoken to disk.                 |
-| `-F`, `--forget-session`              | delete the saved sessionid/csrftoken and exit.               |
+| `-F`, `--forget-session`              | delete the saved sessionid/csrftoken and exit (no `-u` needed). |
 
 ## Running the tests
 

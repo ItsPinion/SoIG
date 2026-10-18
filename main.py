@@ -16,7 +16,8 @@ from api.api import (
 
 ap = argparse.ArgumentParser()
 ap.add_argument("-u", "--username", default=None,
-                help="username of account to scan")
+                help="username of account to scan "
+                     "(not needed with -l, -F or -I)")
 ap.add_argument("-p", "--postscrap", action='store_true',
                 help="scrape all uploaded images info ")
 ap.add_argument("-s", "--savedata", action='store_true',
@@ -30,7 +31,8 @@ ap.add_argument("-i", "--no-impersonate", action="store_true",
 ap.add_argument("-w", "--retry-wait", type=int, default=0, metavar="SECONDS",
                 help="wait and retry once when Instagram rate limits you")
 ap.add_argument("-l", "--login", action="store_true",
-                help="ask for an Instagram sessionid before scraping")
+                help="ask for an Instagram sessionid before scraping; "
+                     "on its own, just log in and store the session")
 ap.add_argument("-d", "--debug", action="store_true",
                 help="show which profile sources were tried and why they failed")
 ap.add_argument("-f", "--session-file", default=None, metavar="PATH",
@@ -53,9 +55,6 @@ args = vars(ap.parse_args())
 if args["inspect_page"]:
     sys.exit(0 if inspect_page(args["inspect_page"]) else 1)
 
-if not args["username"]:
-    ap.error("the following arguments are required: -u/--username")
-
 if args["forget_session"]:
     removed = forget_session(args["session_file"])
     if removed:
@@ -64,6 +63,27 @@ if args["forget_session"]:
         target = args["session_file"] or session_file_path()
         print(f"{re}[!]{nu} no saved session at {target}")
     sys.exit(0)
+
+# These only make sense when there is a profile to scrape.
+USER_ONLY_FLAGS = {
+    "postscrap": "-p/--postscrap",
+    "savedata": "-s/--savedata",
+    "tagscrap": "-t/--tagscrap",
+    "all_posts": "-a/--all-posts",
+    "max_posts": "-m/--max-posts",
+    "dump_page": "-D/--dump-page",
+}
+login_only = False
+if not args["username"]:
+    requested = [flag for key, flag in USER_ONLY_FLAGS.items() if args[key]]
+    if requested:
+        ap.error(f"{', '.join(requested)} must be used with -u/--username")
+    if not args["login"]:
+        ap.error(
+            "nothing to do: pass -u/--username to scrape a profile, or use "
+            "-l/--login, -F/--forget-session or -I/--inspect-page on their own"
+        )
+    login_only = True
 
 os.system('clear') if os.name == 'posix' else os.system('cls')
 try:
@@ -79,6 +99,7 @@ try:
         dump_page=args["dump_page"],
         all_posts=args["all_posts"],
         max_posts=args["max_posts"],
+        login_only=login_only,
     )
 except InstagramError as exc:
     print(f"\n{re}[!]{nu} {exc}\n")
@@ -86,6 +107,9 @@ except InstagramError as exc:
 except KeyboardInterrupt:
     print(f"\n{re}[!]{nu} cancelled\n")
     sys.exit(1)
+
+if login_only:
+    sys.exit(0)
 
 if args['tagscrap']:
     ig.print_data()

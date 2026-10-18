@@ -620,7 +620,7 @@ class extra:
 class main:
     def __init__(
         self,
-        user,
+        user=None,
         sessionid=None,
         interactive=None,
         proxy=None,
@@ -634,8 +634,9 @@ class main:
         dump_page=None,
         all_posts=False,
         max_posts=0,
+        login_only=False,
     ):
-        self.user = user.strip().lstrip("@").rstrip("/")
+        self.user = (user or "").strip().lstrip("@").rstrip("/")
         self.base_dir = os.getcwd()
         self.tags = {}
         self.posts = []
@@ -685,6 +686,14 @@ class main:
         self._last_status = None
         self._last_url = ""
         self._last_bytes = 0
+        if login_only:
+            self._login_only_flow()
+            return
+        if not self.user:
+            raise InstagramError(
+                "no username was given (pass -u/--username, or -l/--login "
+                "on its own to only store a session)"
+            )
         self.get_profile()
 
     def _debug(self, message):
@@ -1122,6 +1131,51 @@ class main:
             return
         print(f"\n{re}[!]{gr} {LOGIN_HELP}\n")
         self._prompt_for_cookies()
+
+    def _login_only_flow(self):
+        """Check or replace the stored session; used by ``--login`` alone.
+
+        There is no profile to scrape in this mode, so the whole job is to end
+        up with a session Instagram accepts. A saved session that still works
+        is reported as such instead of asking for the same sessionid again.
+        """
+        if self._stored_session:
+            self._set_cookies(self._stored_session)
+            self._step("checking the saved session with Instagram ...")
+            status, detail = self._session_status()
+            self._step(f"saved session check: {status} ({self._status_text()})")
+            if status != "invalid":
+                if status == "valid":
+                    self._session_verified = True
+                    print(
+                        f"{gr}[+]{nu} already logged in{detail} "
+                        f"({self.session_file})"
+                    )
+                else:
+                    print(
+                        f"{re}[!]{gr} could not verify the saved session "
+                        f"({detail}); keeping it anyway."
+                    )
+                print(
+                    "    To replace it, run --forget-session and then "
+                    "--login again."
+                )
+                return
+            print(
+                f"\n{re}[!]{gr} the saved session in {self.session_file} has "
+                f"expired ({detail}).\n"
+            )
+            self._set_cookies({})
+            self._stored_session = {}
+
+        print(f"{re}[!]{gr} {LOGIN_HELP}\n")
+        if not self._prompt_for_cookies():
+            raise InstagramError("no session was provided")
+        if not self.save_cookies:
+            print(
+                f"{re}[!]{gr} --no-save-session is set, so the session was "
+                "checked but not stored.\n"
+            )
 
     def _check_status(self, response, source):
         self._last_status = getattr(response, "status_code", None)
