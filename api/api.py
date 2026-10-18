@@ -37,6 +37,12 @@ FEED_DOC_ID = "9310670392322965"
 FEED_PAGE_SIZE = 12
 SESSION_CHECK_URL = "https://www.instagram.com/api/v1/accounts/edit/web_form_data/"
 SESSION_CHECK_USERNAME = "instagram"
+MOBILE_API = "https://i.instagram.com/api/v1"
+MOBILE_PROFILE_INFO_URL = MOBILE_API + "/users/web_profile_info/"
+USERNAME_INFO_URL = MOBILE_API + "/users/{username}/usernameinfo/"
+USER_INFO_URL = MOBILE_API + "/users/{user_id}/info/"
+MOBILE_FEED_URL = MOBILE_API + "/feed/user/{username}/username/"
+IG_ASBD_ID = "129477"
 
 LOGIN_HINT = (
     "Instagram requires a logged-in session for this request. Log in to "
@@ -60,6 +66,14 @@ class InstagramError(Exception):
 
 class LoginRequiredError(InstagramError):
     """Raised when Instagram asks for an authenticated session."""
+
+
+class RateLimitedError(InstagramError):
+    """Raised when Instagram throttles the current IP (HTTP 429)."""
+
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 def _dig(data, *keys, default=None):
@@ -105,6 +119,16 @@ def _clean_sessionid(value):
     return value.strip().strip('"').strip("'")
 
 
+def _retry_after(response):
+    """Read the Retry-After header (seconds) from a throttled response."""
+    value = response.headers.get("Retry-After") if response.headers else None
+    try:
+        seconds = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
 def _response_message(response):
     """Best-effort extraction of Instagram's error message from a response."""
     try:
@@ -123,6 +147,15 @@ def _looks_like_login(text):
         '"require_login":true' in compact
         or "<title>login" in compact
         or 'id="loginform"' in compact
+    )
+
+
+def _looks_like_rate_limit(text):
+    """True when Instagram serves its 'please wait a few minutes' page."""
+    compact = "".join((text or "")[:500_000].lower().split())
+    return (
+        "pleasewaitafewminutesbeforeyoutryagain" in compact
+        or "waitafewminutesbeforeyoutryagain" in compact
     )
 
 
@@ -222,6 +255,9 @@ class main:
         self.profile_pic_url = ""
         self.is_private = False
         self.sessionid = ""
+        self._session_verified = False
+        self._prompts = 0
+        self._mobile_feed_items = None
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -251,21 +287,51 @@ class main:
     def _set_sessionid(self, sessionid):
         """Attach (or clear) the sessionid cookie used for every request."""
         self.sessionid = sessionid or ""
-        if self.sessionid:
-            self.session.cookies.set(
-                "sessionid", self.sessionid, domain=".instagram.com"
-            )
-        else:
+        self._session_verified = False
+        if not self.sessionid:
             self.session.cookies.clear()
+            return
+        self.session.cookies.set("sessionid", self.sessionid, domain=".instagram.com")
+        self._warm_up_session()
+
+    def _warm_up_session(self):
+        """Load instagram.com once so the session gets its csrftoken/mid cookies.
+
+        The website expects a csrftoken alongside the sessionid on its private
+        endpoints; sending only sessionid makes even valid sessions look
+        suspicious and is a common cause of HTTP 429 responses.
+        """
+        try:
+            self._get(
+                "https://www.instagram.com/",
+                headers={
+                    "Accept": (
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                        "image/avif,image/webp,*/*;q=0.8"
+                    )
+                },
+            )
+        except InstagramError:
+            pass
 
     def _session_headers(self, reference_username=None):
         username = reference_username or self.user
-        return {
+        headers = {
             "Accept": "*/*",
             "Referer": PROFILE_URL.format(username=username),
+            "Origin": "https://www.instagram.com",
             "X-IG-App-ID": IG_APP_ID,
+            "X-IG-WWW-Claim": "0",
+            "X-Instagram-AJAX": "1",
+            "X-ASBD-ID": IG_ASBD_ID,
             "X-Requested-With": "XMLHttpRequest",
         }
+        csrf = self.session.cookies.get("csrftoken", domain=".instagram.com")
+        if not csrf:
+            csrf = self.session.cookies.get("csrftoken")
+        if csrf:
+            headers["X-CSRFToken"] = csrf
+        return headers
 
     def _session_status(self):
         """Check whether the current sessionid is accepted by Instagram.
@@ -333,6 +399,7 @@ class main:
         self._set_sessionid(self._provided_sessionid)
         status, detail = self._session_status()
         if status == "valid":
+            self._session_verified = True
             print(f"\n{gr}[+]{nu} sessionid works{detail}")
             return
         print()
@@ -355,6 +422,10 @@ class main:
             try:
                 return self._fetch_profile()
             except LoginRequiredError as exc:
+                if self._session_verified or self._prompts >= 3:
+                    # Retrying with another cookie will not help: Instagram is
+                    # throttling or refusing this IP, not the session.
+                    raise InstagramError(str(exc)) from None
                 self._prompt_for_sessionid(exc)
 
     def _prompt_for_sessionid(self, error):
@@ -378,9 +449,12 @@ class main:
             self._set_sessionid(value)
             status, detail = self._session_status()
             if status == "valid":
+                self._session_verified = True
+                self._prompts += 1
                 print(f"{gr}[+]{nu} sessionid works{detail}\n")
                 return
             if status == "unknown":
+                self._prompts += 1
                 print(
                     f"{re}[!]{gr} could not verify the sessionid ({detail}); "
                     "trying it anyway.\n"
@@ -398,8 +472,9 @@ class main:
         if response.status_code == 404:
             raise InstagramError(f"the {source} returned HTTP 404 (account not found)")
         if response.status_code == 429:
-            raise InstagramError(
-                f"the {source} is rate limiting this IP (HTTP 429); wait a while and try again"
+            raise RateLimitedError(
+                f"the {source} is rate limiting this IP (HTTP 429)",
+                retry_after=_retry_after(response),
             )
         if response.status_code in (401, 403) or "/accounts/login" in response.url:
             raise LoginRequiredError(
@@ -413,37 +488,87 @@ class main:
         if response.status_code >= 400:
             raise InstagramError(f"the {source} returned HTTP {response.status_code}")
 
-    def _fetch_from_api(self):
-        response = self._get(
-            WEB_PROFILE_INFO_URL,
-            params={"username": self.user},
-            headers={
-                "Accept": "*/*",
-                "Referer": PROFILE_URL.format(username=self.user),
-                "X-IG-App-ID": IG_APP_ID,
-                "X-IG-WWW-Claim": "0",
-                "X-Requested-With": "XMLHttpRequest",
-            },
-        )
-        self._check_status(response, "profile API")
+    def _json_user(self, url, source, params=None):
+        """GET a JSON endpoint and pull the user object out of the response."""
+        response = self._get(url, params=params, headers=self._session_headers())
+        self._check_status(response, source)
         try:
             payload = response.json()
         except ValueError:
             if _looks_like_login(response.text):
                 raise LoginRequiredError(
-                    "the profile API served a login wall instead of JSON"
+                    f"the {source} served a login wall instead of JSON"
                 ) from None
-            raise InstagramError("the profile API returned non-JSON data") from None
+            raise InstagramError(f"the {source} returned non-JSON data") from None
 
         user = _dig(payload, "data", "user")
         if not isinstance(user, dict):
-            message = payload.get("message") if isinstance(payload, dict) else None
-            if isinstance(payload, dict) and (
-                payload.get("require_login") or "log" in str(message or "").lower()
-            ):
-                raise LoginRequiredError(message or "the profile API requires a login")
-            raise InstagramError(message or "the profile API returned no user object")
+            user = payload.get("user") if isinstance(payload, dict) else None
+        if not isinstance(user, dict):
+            user = _find_user_payload(payload, self.user)
+        if isinstance(user, dict):
+            return user
+
+        message = payload.get("message") if isinstance(payload, dict) else None
+        if isinstance(payload, dict) and (
+            payload.get("require_login") or "log" in str(message or "").lower()
+        ):
+            raise LoginRequiredError(message or f"the {source} requires a login")
+        raise InstagramError(message or f"the {source} returned no user object")
+
+    def _fetch_from_api(self):
+        return self._json_user(
+            WEB_PROFILE_INFO_URL, "profile API", params={"username": self.user}
+        )
+
+    def _fetch_from_mobile_api(self):
+        return self._json_user(
+            MOBILE_PROFILE_INFO_URL,
+            "mobile profile API",
+            params={"username": self.user},
+        )
+
+    def _fetch_from_username_info(self):
+        return self._json_user(
+            USERNAME_INFO_URL.format(username=self.user), "username lookup API"
+        )
+
+    def _fetch_from_mobile_feed(self):
+        """Rebuild the profile from the mobile feed when other APIs are gated."""
+        items = self._fetch_mobile_feed_items()
+        if not items:
+            raise InstagramError("the user feed returned no posts")
+        user = items[0].get("user") if isinstance(items[0], dict) else None
+        if not isinstance(user, dict) or not user.get("username"):
+            raise InstagramError("the user feed did not include the profile")
+        if user.get("follower_count") is None and user.get("pk"):
+            try:
+                return self._json_user(
+                    USER_INFO_URL.format(user_id=user["pk"]), "user info API"
+                )
+            except InstagramError:
+                pass
         return user
+
+    def _fetch_mobile_feed_items(self):
+        if self._mobile_feed_items is not None:
+            return self._mobile_feed_items
+        response = self._get(
+            MOBILE_FEED_URL.format(username=self.user),
+            params={"count": FEED_PAGE_SIZE},
+            headers=self._session_headers(),
+        )
+        self._check_status(response, "user feed")
+        try:
+            payload = response.json()
+        except ValueError:
+            raise InstagramError("the user feed returned non-JSON data") from None
+        items = payload.get("items") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            message = payload.get("message") if isinstance(payload, dict) else None
+            raise InstagramError(message or "the user feed returned no posts")
+        self._mobile_feed_items = items
+        return items
 
     def _find_user_in_html(self, html):
         soup = BeautifulSoup(html, "html.parser")
@@ -502,6 +627,11 @@ class main:
         self._check_status(response, "profile page")
         user = self._find_user_in_html(response.text)
         if user is None:
+            if _looks_like_rate_limit(response.text):
+                raise RateLimitedError(
+                    "the profile page is rate limiting this IP (HTTP 200 with a "
+                    "'wait a few minutes' page)"
+                )
             if _looks_like_login(response.text):
                 raise LoginRequiredError(
                     "the profile page served a login wall instead of profile data"
@@ -512,15 +642,29 @@ class main:
             )
         return user
 
+    def _profile_sources(self):
+        return (
+            ("profile API", self._fetch_from_api),
+            ("mobile profile API", self._fetch_from_mobile_api),
+            ("username lookup API", self._fetch_from_username_info),
+            ("profile page", self._fetch_from_html),
+            ("user feed", self._fetch_from_mobile_feed),
+        )
+
     def _fetch_profile(self):
         problems = []
         login_required = False
-        for label, fetch in (
-            ("profile API", self._fetch_from_api),
-            ("profile page", self._fetch_from_html),
-        ):
+        rate_limit = None
+        for label, fetch in self._profile_sources():
             try:
                 user = fetch()
+            except RateLimitedError as exc:
+                problems.append(f"{label}: {exc}")
+                if rate_limit is None or (
+                    exc.retry_after or 0
+                ) > (rate_limit.retry_after or 0):
+                    rate_limit = exc
+                continue
             except LoginRequiredError as exc:
                 login_required = True
                 problems.append(f"{label}: {exc}")
@@ -533,13 +677,44 @@ class main:
             problems.append(f"{label}: no profile data returned")
 
         details = "\n    ".join(problems)
-        message = (
-            f"could not retrieve profile data for '{self.user}'.\n    "
-            f"{details}\n    {LOGIN_HINT}"
-        )
+        message = f"could not retrieve profile data for '{self.user}'.\n    {details}"
+        if login_required and not self._session_verified:
+            extra = ""
+            if rate_limit is not None:
+                extra = "\n    " + self._rate_limit_hint(rate_limit.retry_after)
+            raise LoginRequiredError(message + f"\n    {LOGIN_HINT}{extra}")
+        if rate_limit is not None:
+            raise RateLimitedError(
+                message + "\n    " + self._rate_limit_hint(rate_limit.retry_after),
+                retry_after=rate_limit.retry_after,
+            )
         if login_required:
-            raise LoginRequiredError(message)
-        raise InstagramError(message)
+            raise InstagramError(
+                message
+                + "\n    The sessionid was accepted, so this is not a login problem: "
+                "Instagram is refusing these endpoints for this IP/account. "
+                "Wait a few minutes and try again."
+            )
+        raise InstagramError(
+            message + "\n    Instagram may be blocking this IP; wait a few minutes "
+            "and try again."
+        )
+
+    def _rate_limit_hint(self, retry_after):
+        wait = (
+            f"Instagram asked to wait {retry_after} seconds"
+            if retry_after
+            else "Wait a few minutes (Instagram usually clears this in 10-60 minutes)"
+        )
+        hint = f"{wait} and run the command again."
+        if self._session_verified:
+            hint += (
+                " Your sessionid was accepted, so this is throttling, not a login "
+                "problem - pasting another sessionid will not help."
+            )
+        else:
+            hint += " Logging in with a valid sessionid can also raise the limit."
+        return hint
 
     def get_profile(self):
         extra.write(f"\n{gr}[+]{nu} getting profile ...")
@@ -630,8 +805,16 @@ class main:
         try:
             edges = self._fetch_feed()
         except InstagramError as exc:
-            self.posts_error = str(exc)
-            return []
+            try:
+                items = self._fetch_mobile_feed_items()
+            except InstagramError:
+                self.posts_error = str(exc)
+                return []
+            return [
+                self._normalize_post(item)
+                for item in items
+                if isinstance(item, dict)
+            ]
 
         return [
             self._normalize_post(edge["node"])
@@ -664,11 +847,8 @@ class main:
                 "variables": json.dumps(variables, separators=(",", ":")),
             },
             headers={
-                "Accept": "*/*",
+                **self._session_headers(),
                 "Content-Type": "application/x-www-form-urlencoded",
-                "Referer": PROFILE_URL.format(username=self.user),
-                "X-IG-App-ID": IG_APP_ID,
-                "X-Requested-With": "XMLHttpRequest",
             },
         )
         self._check_status(response, "post feed")

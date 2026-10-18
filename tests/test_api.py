@@ -58,11 +58,14 @@ USER = {
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, payload=None, text="", url="https://x/"):
+    def __init__(
+        self, status_code=200, payload=None, text="", url="https://x/", headers=None
+    ):
         self.status_code = status_code
         self._payload = payload
         self.text = text
         self.url = url
+        self.headers = headers or {}
         self.content = b"fake image bytes"
 
     def json(self):
@@ -506,6 +509,158 @@ class LoginPromptTests(BaseTestCase):
 
         with mock.patch.object(api.main, "_get", side_effect=fake_get):
             self.assertEqual(self.make()._session_status(), ("valid", ""))
+
+
+class ThrottlingTests(BaseTestCase):
+    ITEMS = [
+        {
+            "user": {
+                "pk": "42",
+                "username": "prottoy.raha.r",
+                "full_name": "Prottoy Raha",
+                "is_private": False,
+                "follower_count": 777,
+                "following_count": 3,
+                "media_count": 1,
+                "biography": "from the feed",
+                "profile_pic_url": "https://cdn.example/feed.jpg",
+            },
+            "caption": {"text": "#feed"},
+            "image_versions2": {"candidates": [{"url": "https://cdn.example/1.jpg"}]},
+            "like_count": 4,
+            "comment_count": 1,
+            "taken_at": 1700000002,
+        }
+    ]
+
+    def test_429_is_rate_limit_error_with_retry_after(self):
+        response = FakeResponse(status_code=429, headers={"Retry-After": "600"})
+        with mock.patch.object(api.main, "_get", return_value=response):
+            with self.assertRaises(api.RateLimitedError) as caught:
+                self.make()._fetch_from_api()
+        self.assertEqual(caught.exception.retry_after, 600)
+        self.assertIn("rate limiting", str(caught.exception))
+
+    def test_429_without_header(self):
+        response = FakeResponse(status_code=429)
+        with mock.patch.object(api.main, "_get", return_value=response):
+            with self.assertRaises(api.RateLimitedError) as caught:
+                self.make()._fetch_from_api()
+        self.assertIsNone(caught.exception.retry_after)
+
+    def test_verified_session_does_not_prompt_on_429(self):
+        response = FakeResponse(status_code=429, headers={"Retry-After": "600"})
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", " (logged in as @me)")
+        ), mock.patch.object(
+            api.main, "_get", return_value=response
+        ), mock.patch("api.api.getpass.getpass") as prompter:
+            with self.assertRaises(api.RateLimitedError) as caught:
+                api.main(user="prottoy.raha.r", sessionid="good", interactive=True)
+        prompter.assert_not_called()
+        message = str(caught.exception)
+        self.assertIn("not a login problem", message)
+        self.assertIn("600 seconds", message)
+
+    def test_mobile_api_rescues_a_429_from_www(self):
+        def fake_get(url, **kwargs):
+            if url == api.WEB_PROFILE_INFO_URL:
+                return FakeResponse(status_code=429, headers={"Retry-After": "60"})
+            if url == api.MOBILE_PROFILE_INFO_URL:
+                return FakeResponse(payload={"data": {"user": USER}})
+            raise AssertionError(url)
+
+        with mock.patch.object(api.main, "_get", side_effect=fake_get):
+            ig = self.make()
+        self.assertEqual(ig.output["followers"], "120")
+
+    def test_username_info_rescues_a_429(self):
+        def fake_get(url, **kwargs):
+            if url in (api.WEB_PROFILE_INFO_URL, api.MOBILE_PROFILE_INFO_URL):
+                return FakeResponse(status_code=429)
+            if url == api.USERNAME_INFO_URL.format(username="prottoy.raha.r"):
+                return FakeResponse(payload={"user": USER})
+            raise AssertionError(url)
+
+        with mock.patch.object(api.main, "_get", side_effect=fake_get):
+            ig = self.make()
+        self.assertEqual(ig.output["followers"], "120")
+
+    def test_feed_rebuilds_profile_and_posts(self):
+        def fake_get(url, **kwargs):
+            if url in (api.WEB_PROFILE_INFO_URL, api.MOBILE_PROFILE_INFO_URL):
+                return FakeResponse(status_code=429)
+            if url == api.GRAPHQL_URL:
+                return FakeResponse(status_code=429)
+            if url.startswith(api.MOBILE_API):
+                return FakeResponse(payload={"items": self.ITEMS})
+            raise AssertionError(url)
+
+        with mock.patch.object(api.main, "_get", side_effect=fake_get):
+            ig = api.main(user="prottoy.raha.r", interactive=False)
+        self.assertEqual(ig.output["followers"], "777")
+        self.assertEqual(ig.output["bio"], "from the feed")
+        self.assertEqual(ig.tags, {"feed": 1})
+        self.assertEqual(ig.posts[0]["likes"], "4")
+
+    def test_rate_limit_page_in_html(self):
+        html = "<html>Please wait a few minutes before you try again.</html>"
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=html)):
+            with self.assertRaises(api.RateLimitedError):
+                self.make()._fetch_from_html()
+
+    def test_unverified_session_still_prompts_on_login_wall(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("invalid", "HTTP 401")
+        ), mock.patch.object(
+            api.main,
+            "_fetch_profile",
+            side_effect=api.LoginRequiredError("login"),
+        ), mock.patch(
+            "api.api.getpass.getpass", side_effect=[""]
+        ) as prompter:
+            with self.assertRaises(api.LoginRequiredError):
+                api.main(user="prottoy.raha.r", interactive=True)
+        self.assertEqual(prompter.call_count, 1)
+
+    def test_no_more_than_three_prompts(self):
+        answers = ["a", "b", "c", "d"]
+        with mock.patch.object(
+            api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
+        ), mock.patch.object(
+            api.main, "_session_status", return_value=("unknown", "no network")
+        ), mock.patch(
+            "api.api.getpass.getpass", side_effect=answers
+        ) as prompter:
+            with self.assertRaises(api.InstagramError):
+                api.main(user="prottoy.raha.r", interactive=True)
+        self.assertLessEqual(prompter.call_count, 4)
+
+    def test_warm_up_receives_csrf_and_sends_it(self):
+        calls = []
+
+        def fake_get(url, **kwargs):
+            calls.append((url, kwargs.get("headers", {})))
+            return FakeResponse(
+                payload={"data": {"user": USER}},
+                headers={"Set-Cookie": "csrftoken=tok123; Domain=.instagram.com"},
+            )
+
+        with mock.patch.object(api.main, "_get", side_effect=fake_get):
+            ig = self.make(sessionid="good")
+            ig.session.cookies.set(
+                "csrftoken", "tok123", domain=".instagram.com"
+            )
+            headers = ig._session_headers()
+        self.assertEqual(headers.get("X-CSRFToken"), "tok123")
+        self.assertTrue(any(url == "https://www.instagram.com/" for url, _ in calls))
+
+    def test_set_sessionid_warms_up_session(self):
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse()) as getter:
+            ig = self.make()
+            ig._set_sessionid("abc")
+        urls = [call.args[0] for call in getter.call_args_list]
+        self.assertIn("https://www.instagram.com/", urls)
 
 
 if __name__ == "__main__":

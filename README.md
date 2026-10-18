@@ -93,6 +93,23 @@ prompt; it is never written to disk. Use your own account, keep the value
 private and log out / rotate the session when you are done. Scraping is still
 subject to Instagram's rate limits.
 
+#### If Instagram rate limits you (HTTP 429)
+
+Even with a valid session, Instagram throttles per IP address. SoIG tells the two
+apart:
+
+- **`sessionid works`** followed by a 429 message means the cookie is fine -
+  Instagram is throttling the connection, so pasting another sessionid will not
+  help. Wait for the time shown (Instagram often asks for 10-60 minutes) and run
+  the command again.
+- **`[!] Instagram is asking for a logged-in session.`** means the cookie really
+  is missing or rejected, and SoIG prompts for one.
+
+To keep working when `web_profile_info` is throttled, SoIG automatically tries
+other sources for the same profile: the mobile API, the username lookup
+endpoint, the profile page and finally the user's feed. It also loads
+`instagram.com` once per session so the request carries a matching `csrftoken`.
+
 ## Usage
 
 A simple workflow of command used to run SoIG with a Description.
