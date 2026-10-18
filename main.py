@@ -7,6 +7,7 @@
 """
 
 import argparse
+import contextlib
 import json
 import os
 import signal
@@ -289,7 +290,9 @@ def cli(argv=None):
     """Run SoIG; returns the process exit code."""
     if os.name == "posix":
         # `soig ... | head` should stop quietly instead of printing a traceback.
-        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+        with contextlib.suppress(OSError, ValueError):
+            # ValueError when cli() is embedded in a non-main thread.
+            signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     parser = build_parser()
     args = vars(parser.parse_args(argv))
 
