@@ -85,18 +85,10 @@ Each value is checked against Instagram before it is used:
 - **`[!] that sessionid does not work (...)`** - the cookie was rejected, so it
   is discarded and you are asked again. Press Enter to give up.
 
-You can also supply it up front; it is validated the same way, and a stale value
-is ignored with a warning:
-
-```sh
-$ export IG_SESSIONID="<sessionid value>"
-$ python3 main.py --username <username>
-```
-
-The value is read from the `IG_SESSIONID` environment variable or typed at the
-prompt; it is never written to disk. Use your own account, keep the value
-private and log out / rotate the session when you are done. Scraping is still
-subject to Instagram's rate limits.
+Values are only ever typed at the prompt (or stored in the JSON file described
+below). Use your own account, keep the value private and run
+`--forget-session` when you are done. Scraping is still subject to Instagram's
+rate limits.
 
 #### If Instagram rate limits you (HTTP 429)
 
@@ -141,7 +133,7 @@ page.
 
 The prompt works in a normal terminal (input hidden) and also when input is
 piped or comes from an IDE run pane (input visible). If no input is available at
-all, SoIG prints the `IG_SESSIONID=...` command to use instead.
+all, SoIG tells you to rerun with `--login` from a terminal.
 
 #### Saved sessions
 
@@ -177,10 +169,9 @@ $ python3 main.py --username <username> --no-save-session  # do not write them
 $ python3 main.py --username <username> --session-file ~/ig.json
 ```
 
-`IG_SESSION_FILE` overrides the location. Pasting a full `Cookie` header still
-works, and explicit `IG_SESSIONID=<cookies>` takes priority over the saved file.
-The file is plain text: keep it private and run `--forget-session` when you are
-done.
+Pasting a full `Cookie` header at the prompt still works (it is split into the
+individual cookies). The file is plain text: keep it private and run
+`--forget-session` when you are done.
 
 #### Browser impersonation (recommended)
 
@@ -202,9 +193,7 @@ $ pip install curl_cffi        # or: pip install -r requirements.txt
 Route SoIG through another connection when your IP is throttled:
 
 ```sh
-$ IG_PROXY=http://user:pass@host:port python3 main.py --username <username>
-# or
-$ python3 main.py --username <username> --proxy http://host:port
+$ python3 main.py --username <username> --proxy http://user:pass@host:port
 ```
 
 To wait and retry automatically after a 429 (using Instagram's `Retry-After`
@@ -212,7 +201,6 @@ when present):
 
 ```sh
 $ python3 main.py --username <username> --retry-wait 60
-# or: IG_RETRY_WAIT=60 python3 main.py --username <username>
 ```
 
 ## Usage
@@ -227,11 +215,11 @@ A simple workflow of command used to run SoIG with a Description.
 | `-s` , `--savedata`                   | save data to file ( save profile pic, info , post info ). |
 | `-t` , `--tagscrap`                   | list all used tags (the five most used are shown by default). |
 | `--login`                             | ask for an Instagram `sessionid` before scraping.            |
-| `--proxy PROXY`                       | route requests through an HTTP(S) proxy (or set `IG_PROXY`). |
-| `--retry-wait SECONDS`                | wait and retry once after a 429 (or set `IG_RETRY_WAIT`).    |
+| `--proxy PROXY`                       | route requests through an HTTP(S) proxy.                     |
+| `--retry-wait SECONDS`                | wait and retry once after a 429.                             |
 | `--no-impersonate`                    | disable browser TLS impersonation (`curl_cffi`).             |
 | `--debug`                             | show each profile source that was tried and why it failed.   |
-| `--session-file PATH`                 | where saved cookies live (or set `IG_SESSION_FILE`).         |
+| `--session-file PATH`                 | where saved cookies live.                                    |
 | `--no-save-session`                   | do not save the sessionid/csrftoken to disk.                 |
 | `--forget-session`                    | delete the saved sessionid/csrftoken and exit.               |
 

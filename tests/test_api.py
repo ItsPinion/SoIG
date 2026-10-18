@@ -83,13 +83,7 @@ class BaseTestCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(self.tmp.name)
-        env = {
-            "IG_SESSION_FILE": os.path.join(self.tmp.name, "session.json"),
-        }
-        env_patch = mock.patch.dict(os.environ, env)
-        env_patch.start()
-        self.addCleanup(env_patch.stop)
-        os.environ.pop("IG_SESSIONID", None)
+        self.session_path = os.path.join(self.tmp.name, "session.json")
         for name, value in (
             ("tiny_url", mock.Mock(side_effect=lambda url: url)),
             ("write", mock.Mock()),
@@ -98,12 +92,17 @@ class BaseTestCase(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def new_main(self, **kwargs):
+        kwargs.setdefault("session_file", self.session_path)
+        return api.main(**kwargs)
+
     def make(self, user=USER, feed=None, **kwargs):
         kwargs.setdefault("interactive", False)
+        kwargs.setdefault("session_file", self.session_path)
         with mock.patch.object(
             api.main, "_fetch_profile", return_value=dict(user)
         ), mock.patch.object(api.main, "_fetch_feed", return_value=feed or []):
-            return api.main(user=kwargs.pop("username", "prottoy.raha.r"), **kwargs)
+            return self.new_main(user=kwargs.pop("username", "prottoy.raha.r"), **kwargs)
 
 
 class ProfileTests(BaseTestCase):
@@ -238,7 +237,7 @@ class ModernProfileTests(BaseTestCase):
         ), mock.patch.object(
             api.main, "_fetch_feed", side_effect=api.InstagramError("feed blocked")
         ):
-            ig = api.main(user="prottoy.raha.r")
+            ig = self.new_main(user="prottoy.raha.r")
         self.assertEqual(ig.output["followers"], "321")
         self.assertEqual(ig.posts, [])
         self.assertEqual(ig.posts_error, "feed blocked")
@@ -357,13 +356,13 @@ class FetchTests(BaseTestCase):
             api.main, "_get", side_effect=api.InstagramError("connection refused")
         ):
             with self.assertRaisesRegex(api.InstagramError, "could not retrieve"):
-                api.main(user="prottoy.raha.r")
+                self.new_main(user="prottoy.raha.r")
 
-    def test_session_id_from_environment(self):
-        with mock.patch.dict(os.environ, {"IG_SESSIONID": "abc123"}), mock.patch.object(
+    def test_explicit_sessionid_is_used(self):
+        with mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
         ):
-            ig = self.make()
+            ig = self.make(sessionid="abc123")
         cookies = ig.session.cookies.get_dict()
         self.assertEqual(cookies.get("sessionid"), "abc123")
 
@@ -410,7 +409,7 @@ class LoginPromptTests(BaseTestCase):
         ), mock.patch(
             "api.api._read_prompt", side_effect=["wrong", "right", ""]
         ):
-            ig = api.main(user="prottoy.raha.r", interactive=True)
+            ig = self.new_main(user="prottoy.raha.r", interactive=True)
 
         self.assertEqual(ig.output["followers"], "120")
         self.assertEqual(ig.sessionid, "right")
@@ -421,7 +420,7 @@ class LoginPromptTests(BaseTestCase):
             api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
         ), mock.patch("api.api._read_prompt") as getpass_mock:
             with self.assertRaises(api.LoginRequiredError):
-                api.main(user="prottoy.raha.r", interactive=False)
+                self.new_main(user="prottoy.raha.r", interactive=False)
         getpass_mock.assert_not_called()
 
     def test_empty_input_cancels(self):
@@ -433,7 +432,7 @@ class LoginPromptTests(BaseTestCase):
             api.main, "_session_status"
         ) as status:
             with self.assertRaises(api.LoginRequiredError):
-                api.main(user="prottoy.raha.r", interactive=True)
+                self.new_main(user="prottoy.raha.r", interactive=True)
         status.assert_not_called()
 
     def test_ctrl_c_cancels(self):
@@ -443,7 +442,7 @@ class LoginPromptTests(BaseTestCase):
             "api.api._read_prompt", side_effect=KeyboardInterrupt
         ):
             with self.assertRaises(api.LoginRequiredError):
-                api.main(user="prottoy.raha.r", interactive=True)
+                self.new_main(user="prottoy.raha.r", interactive=True)
 
     def test_unverifiable_session_is_retried_anyway(self):
         fetches = []
@@ -459,7 +458,7 @@ class LoginPromptTests(BaseTestCase):
         ), mock.patch.object(
             api.main, "_session_status", return_value=("unknown", "timed out")
         ), mock.patch("api.api._read_prompt", side_effect=["maybe", ""]):
-            ig = api.main(user="prottoy.raha.r", interactive=True)
+            ig = self.new_main(user="prottoy.raha.r", interactive=True)
         self.assertEqual(ig.output["followers"], "120")
         self.assertEqual(len(fetches), 2)
 
@@ -536,7 +535,7 @@ META_HTML = (
 
 class SavedSessionTests(BaseTestCase):
     def path(self):
-        return os.environ["IG_SESSION_FILE"]
+        return self.session_path
 
     def test_saved_session_is_reused_without_prompting(self):
         api.save_session({"sessionid": "saved", "csrftoken": "c"}, self.path())
@@ -606,17 +605,19 @@ class SavedSessionTests(BaseTestCase):
         self.assertFalse(os.path.exists(self.path()))
         self.assertIsNone(api.forget_session(self.path()))
 
-    def test_session_file_path_override(self):
-        with mock.patch.dict(os.environ, {"IG_SESSION_FILE": "/tmp/custom.json"}):
-            self.assertEqual(str(api.session_file_path()), "/tmp/custom.json")
-
-    def test_session_file_path_defaults_under_config(self):
-        env = {k: v for k, v in os.environ.items() if k != "IG_SESSION_FILE"}
-        env["XDG_CONFIG_HOME"] = "/tmp/xdg"
-        with mock.patch.dict(os.environ, env, clear=True):
+    def test_session_file_path_defaults_under_home(self):
+        with mock.patch.object(api.Path, "home", return_value=api.Path("/tmp/home")):
             self.assertEqual(
-                str(api.session_file_path()), "/tmp/xdg/SoIG/session.json"
+                str(api.session_file_path()), "/tmp/home/.config/SoIG/session.json"
             )
+
+    def test_custom_session_file_is_used(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ), mock.patch("api.api._read_prompt", side_effect=["sid", ""]):
+            self.make(interactive=True, login=True, session_file="/tmp/other.json")
+        # nothing written to the default location
+        self.assertEqual(api.load_session(self.path()), {})
 
 
 class SessionNoticeTests(BaseTestCase):
@@ -645,7 +646,7 @@ class SessionNoticeTests(BaseTestCase):
             api.main, "_get", side_effect=fake_get
         ), contextlib.redirect_stdout(out):
             with self.assertRaises(api.InstagramError):
-                api.main(user="prottoy.raha.r", interactive=False, debug=True)
+                self.new_main(user="prottoy.raha.r", interactive=False, debug=True)
         text = out.getvalue()
         self.assertIn("[debug]", text)
         self.assertIn("profile page", text)
@@ -661,7 +662,7 @@ class UpgradeTests(BaseTestCase):
             return FakeResponse(status_code=429)
 
         with mock.patch.object(api.main, "_get", side_effect=fake_get):
-            return api.main(user="_thessb17_", **kwargs)
+            return self.new_main(user="_thessb17_", **kwargs)
 
     def test_offers_login_when_only_metadata_is_available(self):
         with mock.patch.object(
@@ -713,7 +714,7 @@ class UpgradeTests(BaseTestCase):
         ), mock.patch(
             "api.api._read_prompt", side_effect=["sessionid=good", ""]
         ):
-            ig = api.main(user="_thessb17_", interactive=True)
+            ig = self.new_main(user="_thessb17_", interactive=True)
         self.assertFalse(ig.limited_data)
         self.assertEqual(ig.output["followers"], "120")
         self.assertEqual(ig.output["bio"], "line one, line two")
@@ -751,7 +752,7 @@ class MetadataFallbackTests(BaseTestCase):
         with mock.patch.object(
             api.main, "_get", return_value=FakeResponse(text=META_HTML)
         ):
-            ig = api.main(user="_thessb17_", interactive=False)
+            ig = self.new_main(user="_thessb17_", interactive=False)
         self.assertEqual(ig.output["followers"], "1234")
         self.assertEqual(ig.output["following"], "56")
         self.assertEqual(ig.output["posts"], "78")
@@ -822,7 +823,7 @@ class MetadataFallbackTests(BaseTestCase):
         with mock.patch.object(
             api.main, "_fetch_profile", side_effect=fetch
         ), mock.patch("api.api.time.sleep") as sleeper:
-            ig = api.main(
+            ig = self.new_main(
                 user="prottoy.raha.r",
                 interactive=False,
                 retry_wait=5,
@@ -844,7 +845,7 @@ class MetadataFallbackTests(BaseTestCase):
         with mock.patch.object(
             api.main, "_fetch_profile", side_effect=fetch
         ), mock.patch("api.api.time.sleep") as sleeper:
-            api.main(
+            self.new_main(
                 user="prottoy.raha.r",
                 interactive=False,
                 retry_wait=5,
@@ -868,7 +869,7 @@ class MetadataFallbackTests(BaseTestCase):
         ), mock.patch(
             "api.api._read_prompt", side_effect=["sessionid=good", ""]
         ) as prompter:
-            ig = api.main(user="prottoy.raha.r", interactive=True)
+            ig = self.new_main(user="prottoy.raha.r", interactive=True)
         self.assertEqual(prompter.call_count, 2)
         self.assertEqual(ig.sessionid, "good")
 
@@ -877,7 +878,7 @@ class MetadataFallbackTests(BaseTestCase):
             api.main, "_fetch_profile", side_effect=api.RateLimitedError("limited")
         ), mock.patch("api.api.time.sleep") as sleeper:
             with self.assertRaises(api.RateLimitedError):
-                api.main(user="prottoy.raha.r", interactive=False)
+                self.new_main(user="prottoy.raha.r", interactive=False)
         sleeper.assert_not_called()
 
 
@@ -936,7 +937,7 @@ class CookieAndHostTests(BaseTestCase):
             return FakeResponse(status_code=429)
 
         with mock.patch.object(api.main, "_get", side_effect=fake_get):
-            ig = api.main(user="prottoy.raha.r", interactive=False)
+            ig = self.new_main(user="prottoy.raha.r", interactive=False)
         web_url, web_headers = next(
             (url, headers)
             for url, headers in seen
@@ -982,10 +983,13 @@ class CookieAndHostTests(BaseTestCase):
             with self.assertRaises(api.InstagramError):
                 self.make()._fetch_from_html()
 
-    def test_proxy_from_environment(self):
-        with mock.patch.dict(os.environ, {"IG_PROXY": "http://127.0.0.1:8888"}):
-            ig = self.make()
+    def test_proxy_option_is_applied(self):
+        ig = self.make(proxy="http://127.0.0.1:8888")
         self.assertEqual(ig.session.proxies.get("https"), "http://127.0.0.1:8888")
+
+    def test_no_proxy_by_default(self):
+        ig = self.make()
+        self.assertFalse(ig.session.proxies.get("https"))
 
 
 class ThrottlingTests(BaseTestCase):
@@ -1033,7 +1037,7 @@ class ThrottlingTests(BaseTestCase):
             api.main, "_get", return_value=response
         ), mock.patch("api.api._read_prompt") as prompter:
             with self.assertRaises(api.RateLimitedError) as caught:
-                api.main(user="prottoy.raha.r", sessionid="good", interactive=True)
+                self.new_main(user="prottoy.raha.r", sessionid="good", interactive=True)
         prompter.assert_not_called()
         message = str(caught.exception)
         self.assertIn("not a login problem", message)
@@ -1072,7 +1076,7 @@ class ThrottlingTests(BaseTestCase):
             return FakeResponse(status_code=429)
 
         with mock.patch.object(api.main, "_get", side_effect=fake_get):
-            ig = api.main(user="prottoy.raha.r", interactive=False)
+            ig = self.new_main(user="prottoy.raha.r", interactive=False)
         self.assertEqual(ig.output["followers"], "777")
         self.assertEqual(ig.output["bio"], "from the feed")
         self.assertEqual(ig.tags, {"feed": 1})
@@ -1095,7 +1099,7 @@ class ThrottlingTests(BaseTestCase):
             "api.api._read_prompt", side_effect=[""]
         ) as prompter:
             with self.assertRaises(api.LoginRequiredError):
-                api.main(user="prottoy.raha.r", interactive=True)
+                self.new_main(user="prottoy.raha.r", interactive=True)
         self.assertEqual(prompter.call_count, 1)
 
     def test_prompt_reads_visible_line_when_not_a_tty(self):
@@ -1106,6 +1110,14 @@ class ThrottlingTests(BaseTestCase):
         self.assertTrue(api._stdin_available())
         with mock.patch.object(sys, "stdin", None):
             self.assertFalse(api._stdin_available())
+
+    def test_profile_output_is_not_erased(self):
+        out = io.StringIO()
+        ig = self.make()
+        with mock.patch("os.system") as system, contextlib.redirect_stdout(out):
+            ig.print_data_()
+        system.assert_not_called()
+        self.assertIn("followers", out.getvalue())
 
     def test_eof_on_stdin_cancels(self):
         with mock.patch.object(sys, "stdin", io.StringIO("")):
@@ -1122,7 +1134,7 @@ class ThrottlingTests(BaseTestCase):
             "api.api._read_prompt", side_effect=["a", "", "b", "", "c", "", "d", ""]
         ) as prompter:
             with self.assertRaises(api.InstagramError):
-                api.main(user="prottoy.raha.r", interactive=True)
+                self.new_main(user="prottoy.raha.r", interactive=True)
         # three sessionid attempts (plus the csrftoken asks) at most
         self.assertLessEqual(prompter.call_count, 8)
 

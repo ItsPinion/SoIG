@@ -73,8 +73,8 @@ COOKIE_NAMES = (
 
 LOGIN_HINT = (
     "Instagram requires a logged-in session for this request. Log in to "
-    "instagram.com in your browser, copy the value of the 'sessionid' cookie and "
-    "paste it when prompted (or export it as IG_SESSIONID), then run the tool again."
+    "instagram.com in your browser and paste the value of the 'sessionid' cookie "
+    "when prompted, then run the tool again."
 )
 
 LOGIN_HELP = (
@@ -197,15 +197,8 @@ def _parse_cookie_input(value):
 
 
 def session_file_path():
-    """Where the saved cookies live (override with IG_SESSION_FILE)."""
-    override = os.environ.get("IG_SESSION_FILE", "").strip()
-    if override:
-        return Path(override).expanduser()
-    if os.name == "nt":
-        base = os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming")
-    else:
-        base = os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
-    return Path(base) / "SoIG" / "session.json"
+    """Default location for the saved cookies (see --session-file)."""
+    return Path.home() / ".config" / "SoIG" / "session.json"
 
 
 def load_session(path=None):
@@ -527,9 +520,7 @@ class main:
         if interactive is None:
             interactive = _stdin_available()
         self.interactive = bool(interactive)
-        self._provided_cookies = _parse_cookie_input(
-            sessionid if sessionid is not None else os.environ.get("IG_SESSIONID", "")
-        )
+        self._provided_cookies = _parse_cookie_input(sessionid or "")
         self.force_login = login
         self.debug = debug
         self.save_cookies = save_cookies
@@ -559,7 +550,7 @@ class main:
         else:
             self.impersonating = False
             session = requests.Session()
-        proxy = (proxy if proxy is not None else os.environ.get("IG_PROXY", "")).strip()
+        proxy = (proxy or "").strip()
         if proxy:
             session.proxies.update({"http": proxy, "https": proxy})
         return session
@@ -704,7 +695,7 @@ class main:
         return "unknown", f"HTTP {response.status_code}"
 
     def _use_provided_sessionid(self):
-        """Validate cookies passed as an argument or via IG_SESSIONID."""
+        """Validate cookies passed in explicitly."""
         if not self._provided_cookies:
             return
         self._set_cookies(self._provided_cookies)
@@ -1301,8 +1292,8 @@ class main:
         else:
             hint += " Logging in with a valid sessionid can also raise the limit."
         hint += (
-            " If it keeps happening, use another network or set "
-            "IG_PROXY=http://host:port."
+            " If it keeps happening, use another network or pass "
+            "--proxy http://host:port."
         )
         return hint
 
@@ -1584,9 +1575,10 @@ class main:
         print(
             f"{re}[!]{gr} no terminal input is available, so you cannot be asked "
             "for a sessionid here.\n"
-            "    Export one and run again:\n"
-            f"    IG_SESSIONID='sessionid=...; csrftoken=...' python3 main.py "
-            f"-u {self.user}\n"
+            f"    Run this in a terminal instead: python3 main.py -u {self.user} "
+            "--login\n"
+            f"    or store the cookies with --session-file {self.session_file} "
+            "yourself.\n"
         )
 
     def _warn_limited_data(self):
@@ -1594,12 +1586,12 @@ class main:
             if self.impersonating:
                 advice = (
                     "Instagram stripped the full payload even with browser "
-                    "impersonation; try another network or IG_PROXY."
+                    "impersonation; try another network or --proxy."
                 )
             else:
                 advice = (
                     "Install curl_cffi (pip install curl_cffi) for browser "
-                    "impersonation, or use IG_PROXY, to get the full profile."
+                    "impersonation, or --proxy, to get the full profile."
                 )
             print(
                 f"{re}[!]{gr} only the public profile metadata was available "
@@ -1616,7 +1608,6 @@ class main:
             self._warned_posts_error = True
 
     def _extracted_from_print_data_2(self):
-        os.system("clear" if os.name == "posix" else "cls")
         extra.banner()
         for key, value in self.output.items():
             print(f"{gr}{key:<17} : {nu}{value}")
