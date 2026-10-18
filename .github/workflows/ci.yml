@@ -47,9 +47,10 @@ jobs:
           status=$?
           tail -40 unittest.log
           if [ "$status" -ne 0 ]; then
-            # Surface the failure as an annotation so it is readable without
-            # downloading the full job log.
-            echo "::error::$(tail -30 unittest.log | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
+            # Surface the failures as an annotation so they are readable
+            # without downloading the full job log.
+            grep -E "^(FAIL|ERROR):" unittest.log || true
+            echo "::error::$(grep -E "^(FAIL|ERROR):" unittest.log | head -12 | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')"
           fi
           exit "$status"
       - run: soig --version
