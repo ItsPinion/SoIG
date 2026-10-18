@@ -1617,6 +1617,17 @@ class main:
             ("mobile user feed", self._fetch_from_mobile_feed),
         )
 
+    @staticmethod
+    def _fill_missing(user, extra_data):
+        """Fill gaps in a full profile with values from the metadata fallback."""
+        merged = dict(user)
+        for key, value in (extra_data or {}).items():
+            if value in (None, "", 0, [], {}):
+                continue
+            if merged.get(key) in (None, "", 0, [], {}):
+                merged[key] = value
+        return merged
+
     def _fetch_profile(self):
         problems = []
         login_required = False
@@ -1666,6 +1677,8 @@ class main:
                     f"{time.monotonic() - started:.1f}s)"
                 )
                 if not self.limited_data:
+                    if fallback is not None:
+                        user = self._fill_missing(user, fallback[0])
                     return user
                 # Only public metadata so far: keep it and try the remaining
                 # endpoints for a richer payload.
@@ -1947,6 +1960,10 @@ class main:
             message = payload.get("message") if isinstance(payload, dict) else None
             raise InstagramError(message or "the post feed returned no posts")
         self._feed_edges = edges
+        if self.debug and edges:
+            first = edges[0].get("node", edges[0]) if isinstance(edges[0], dict) else {}
+            self._debug(f"feed first node keys: {sorted(first)[:25]}")
+            self._debug(f"feed caption: {str(first.get('caption'))[:160]}")
         return edges
 
     @staticmethod

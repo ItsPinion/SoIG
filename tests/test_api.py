@@ -898,6 +898,55 @@ class AnonymousPageTests(BaseTestCase):
         self.assertEqual(headers["Sec-Fetch-Mode"], "navigate")
         self.assertEqual(headers["Sec-Fetch-Dest"], "document")
 
+    def test_fill_missing_keeps_existing_values(self):
+        merged = api.main._fill_missing(
+            {"biography": "real", "follower_count": 10},
+            {"biography": "meta", "follower_count": 99, "media_count": 8274},
+        )
+        self.assertEqual(merged["biography"], "real")
+        self.assertEqual(merged["follower_count"], 10)
+        self.assertEqual(merged["media_count"], 8274)
+
+    def test_metadata_post_count_fills_a_payload_without_media_count(self):
+        embedded = json.loads(json.dumps(self.EMBEDDED))
+        def find_user(obj):
+            if isinstance(obj, dict):
+                if "xig_user_by_username" in obj:
+                    return obj["xig_user_by_username"]
+                for value in obj.values():
+                    found = find_user(value)
+                    if found:
+                        return found
+            elif isinstance(obj, list):
+                for value in obj:
+                    found = find_user(value)
+                    if found:
+                        return found
+            return None
+
+        find_user(embedded).pop("media_count")
+        html = (
+            '<html><body><script type="application/json" data-sjs>'
+            + json.dumps(embedded)
+            + "</script></body></html>"
+        )
+        meta = (
+            "<html><head>"
+            '<meta property="og:title" '
+            'content="Prottoy (@prottoy.raha.r) • Instagram" />'
+            '<meta property="og:description" content="321 Followers, 1 Following, '
+            '4,242 Posts - See Instagram photos from @prottoy.raha.r" />'
+            "</head></html>"
+        )
+        session = mock.Mock()
+        session.get.return_value = FakeResponse(text=html)
+        with mock.patch.object(
+            api.main, "_get", return_value=FakeResponse(text=meta)
+        ), mock.patch.object(api.main, "_anonymous_session", return_value=session):
+            ig = self.new_main(user="prottoy.raha.r", interactive=False)
+        self.assertEqual(ig.output["posts"], "4242")
+        self.assertEqual(ig.output["bio"], "anon bio")
+
     def test_anonymous_page_rescues_a_stripped_logged_in_page(self):
         meta = (
             "<html><head>"

@@ -108,7 +108,8 @@ other sources for the same profile:
 1. `users/web_profile_info/?username=`
 2. the profile page's embedded JSON (`data-sjs` / `xig_user_by_username`),
    fetched again as a **logged-out browser navigation**, because Instagram
-   only embeds the payload for those requests
+   only embeds the payload for those requests. Missing counts are filled from
+   the page's OpenGraph metadata
 3. the profile page's OpenGraph metadata (works even when Instagram strips the
    JSON payload; gives name, followers, following, posts and avatar)
 4. `graphql/query/` with `PolarisProfilePageContentQuery`, the query the web
