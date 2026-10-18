@@ -73,6 +73,11 @@ Press Enter without a value to cancel.
 sessionid:
 ```
 
+Paste either the `sessionid` value or, preferably, the **whole `Cookie` request
+header** from that request (`sessionid=...; csrftoken=...; ds_user_id=...`). All
+cookies are applied, which makes the requests look like your browser's and
+avoids the 403/429 responses Instagram sends when only `sessionid` is present.
+
 Each value is checked against Instagram before it is used:
 
 - **`[+] sessionid works (logged in as @you)`** - the cookie is valid and the
@@ -106,9 +111,24 @@ apart:
   is missing or rejected, and SoIG prompts for one.
 
 To keep working when `web_profile_info` is throttled, SoIG automatically tries
-other sources for the same profile: the mobile API, the username lookup
-endpoint, the profile page and finally the user's feed. It also loads
-`instagram.com` once per session so the request carries a matching `csrftoken`.
+other sources for the same profile, all on `www.instagram.com` where web cookies
+are accepted:
+
+1. `users/web_profile_info/?username=`
+2. `users/<username>/usernameinfo/`
+3. `feed/user/<username>/username/` (falling back to `feed/user/<id>/`)
+4. the profile page's embedded JSON
+5. the same endpoints on `i.instagram.com` with the mobile app's headers
+
+It also loads `instagram.com` once per session so requests carry a matching
+`csrftoken`.
+
+If your IP is throttled for a longer period, route SoIG through another
+connection with `IG_PROXY`:
+
+```sh
+$ IG_PROXY=http://user:pass@host:port python3 main.py --username <username>
+```
 
 ## Usage
 

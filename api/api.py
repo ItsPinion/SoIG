@@ -37,12 +37,32 @@ FEED_DOC_ID = "9310670392322965"
 FEED_PAGE_SIZE = 12
 SESSION_CHECK_URL = "https://www.instagram.com/api/v1/accounts/edit/web_form_data/"
 SESSION_CHECK_USERNAME = "instagram"
+WWW_API = "https://www.instagram.com/api/v1"
+WWW_USERNAME_INFO_URL = WWW_API + "/users/{username}/usernameinfo/"
+WWW_FEED_BY_USERNAME_URL = WWW_API + "/feed/user/{username}/username/"
+WWW_FEED_BY_ID_URL = WWW_API + "/feed/user/{user_id}/"
 MOBILE_API = "https://i.instagram.com/api/v1"
+MOBILE_APP_ID = "567067343352427"
+MOBILE_USER_AGENT = (
+    "Instagram 275.0.0.27.98 Android (33/13; 480dpi; 1080x2400; samsung; "
+    "SM-G991B; o1s; exynos2100; en_US; 458229237)"
+)
 MOBILE_PROFILE_INFO_URL = MOBILE_API + "/users/web_profile_info/"
 USERNAME_INFO_URL = MOBILE_API + "/users/{username}/usernameinfo/"
 USER_INFO_URL = MOBILE_API + "/users/{user_id}/info/"
 MOBILE_FEED_URL = MOBILE_API + "/feed/user/{username}/username/"
 IG_ASBD_ID = "129477"
+
+COOKIE_NAMES = (
+    "sessionid",
+    "csrftoken",
+    "ds_user_id",
+    "mid",
+    "ig_did",
+    "ig_nrcb",
+    "datr",
+    "rur",
+)
 
 LOGIN_HINT = (
     "Instagram requires a logged-in session for this request. Log in to "
@@ -53,10 +73,12 @@ LOGIN_HINT = (
 LOGIN_HELP = (
     "Instagram is asking for a logged-in session.\n"
     "  1. Log in to https://www.instagram.com in your browser.\n"
-    "  2. Open the developer tools (F12) -> Application -> Storage -> Cookies ->\n"
-    "     instagram.com and copy the value of the 'sessionid' cookie.\n"
+    "  2. Open the developer tools (F12) -> Network, reload the page and click the\n"
+    "     first request to instagram.com. Copy the whole 'Cookie' request header\n"
+    "     (or at least the 'sessionid' cookie value from the Application tab).\n"
     "  3. Paste it below (the value is hidden while you type).\n"
-    "Press Enter without a value to cancel."
+    "Pasting the full cookie header works best: 'sessionid=...; csrftoken=...;\n"
+    "ds_user_id=...'. Press Enter without a value to cancel."
 )
 
 
@@ -101,22 +123,52 @@ def _as_bool(value):
     return bool(value)
 
 
-def _clean_sessionid(value):
-    """Normalise a pasted sessionid.
+def _parse_cookie_input(value):
+    """Turn pasted text into a ``{cookie name: value}`` mapping.
 
-    Accepts a bare value, ``sessionid=...`` or a whole pasted cookie header
-    such as ``sessionid=abc; ds_user_id=123``.
+    Accepts a bare sessionid, ``sessionid=...``, a full ``Cookie`` header such
+    as ``sessionid=abc; csrftoken=def; ds_user_id=123`` or a JSON object of
+    cookies. Unknown cookies are kept, so pasting the browser header in full is
+    the most reliable option.
     """
-    value = (value or "").strip().strip('"').strip("'")
+    value = (value or "").strip()
+    if len(value) >= 7 and value[:7].lower() == "cookie:":
+        value = value[7:].strip()
+    value = value.strip().strip('"').strip("'")
+    if not value:
+        return {}
+
+    if value.startswith("{"):
+        try:
+            payload = json.loads(value)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            return {
+                str(name).strip(): str(cookie).strip()
+                for name, cookie in payload.items()
+                if str(name).strip() and str(cookie).strip()
+            }
+
     if ";" in value:
+        cookies = {}
         for part in value.split(";"):
-            name, separator, cookie_value = part.strip().partition("=")
-            if separator and name.strip().lower() == "sessionid":
-                value = cookie_value
-                break
-    if value.lower().startswith("sessionid="):
-        value = value.split("=", 1)[1]
-    return value.strip().strip('"').strip("'")
+            name, separator, cookie = part.strip().partition("=")
+            if separator and name.strip():
+                cookies[name.strip()] = cookie.strip()
+        if cookies:
+            return cookies
+
+    name, separator, cookie = value.partition("=")
+    if separator and name.strip().lower() in COOKIE_NAMES:
+        return {name.strip(): cookie.strip()}
+
+    return {"sessionid": value}
+
+
+def _clean_sessionid(value):
+    """Return just the sessionid from anything ``_parse_cookie_input`` accepts."""
+    return _parse_cookie_input(value).get("sessionid", "")
 
 
 def _retry_after(response):
@@ -175,14 +227,29 @@ def _json_after_marker(text, marker):
             start = index + max(len(marker), 1)
 
 
+def _is_user_payload(data):
+    """True when a JSON object looks like an Instagram profile."""
+    if not isinstance(data, dict) or "username" not in data:
+        return False
+    return any(
+        key in data
+        for key in (
+            "follower_count",
+            "edge_followed_by",
+            "profile_pic_url",
+            "profile_pic_url_hd",
+            "media_count",
+            "edge_owner_to_timeline_media",
+        )
+    )
+
+
 def _iter_user_payloads(payload, depth=0):
     """Yield every user object found inside an arbitrary JSON payload."""
     if depth > 50:
         return
     if isinstance(payload, dict):
-        if "username" in payload and (
-            "edge_followed_by" in payload or "follower_count" in payload
-        ):
+        if _is_user_payload(payload):
             yield payload
         for value in payload.values():
             yield from _iter_user_payloads(value, depth + 1)
@@ -193,14 +260,14 @@ def _iter_user_payloads(payload, depth=0):
 
 def _find_user_payload(payload, username=None):
     """Find the user object, preferring one for ``username``."""
-    fallback = None
     wanted = str(username).casefold() if username is not None else None
+    fallback = None
     for user in _iter_user_payloads(payload):
         if wanted is not None and str(user.get("username", "")).casefold() == wanted:
             return user
         if fallback is None:
             fallback = user
-    return fallback
+    return fallback if wanted is None else None
 
 
 class extra:
@@ -257,7 +324,8 @@ class main:
         self.sessionid = ""
         self._session_verified = False
         self._prompts = 0
-        self._mobile_feed_items = None
+        self._feed_items = {}
+        self._user_id = None
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -272,9 +340,12 @@ class main:
             except (AttributeError, ValueError):
                 interactive = False
         self.interactive = bool(interactive)
-        self._provided_sessionid = _clean_sessionid(
+        self._provided_cookies = _parse_cookie_input(
             sessionid if sessionid is not None else os.environ.get("IG_SESSIONID", "")
         )
+        proxy = os.environ.get("IG_PROXY", "").strip()
+        if proxy:
+            self.session.proxies.update({"http": proxy, "https": proxy})
         self.get_profile()
 
     def _get(self, url, **kwargs):
@@ -283,6 +354,17 @@ class main:
             return self.session.get(url, **kwargs)
         except requests.RequestException as exc:
             raise InstagramError(f"could not reach {url}: {exc}") from exc
+
+    def _set_cookies(self, cookies):
+        """Attach every cookie from a parsed mapping (or clear the jar)."""
+        if not cookies:
+            self._set_sessionid(None)
+            return
+        self.session.cookies.clear()
+        for name, value in cookies.items():
+            if name != "sessionid":
+                self.session.cookies.set(name, value, domain=".instagram.com")
+        self._set_sessionid(cookies.get("sessionid", ""))
 
     def _set_sessionid(self, sessionid):
         """Attach (or clear) the sessionid cookie used for every request."""
@@ -299,8 +381,10 @@ class main:
 
         The website expects a csrftoken alongside the sessionid on its private
         endpoints; sending only sessionid makes even valid sessions look
-        suspicious and is a common cause of HTTP 429 responses.
+        suspicious and is a common cause of HTTP 429/403 responses.
         """
+        if self.session.cookies.get("csrftoken"):
+            return
         try:
             self._get(
                 "https://www.instagram.com/",
@@ -313,6 +397,17 @@ class main:
             )
         except InstagramError:
             pass
+
+    def _api_headers(self, reference_username=None, mobile=False):
+        """Headers for API calls, matching the web or mobile Instagram client."""
+        headers = self._session_headers(reference_username)
+        if mobile:
+            headers["User-Agent"] = MOBILE_USER_AGENT
+            headers["X-IG-App-ID"] = MOBILE_APP_ID
+            headers.pop("X-ASBD-ID", None)
+            headers.pop("X-Instagram-AJAX", None)
+            headers.pop("Origin", None)
+        return headers
 
     def _session_headers(self, reference_username=None):
         username = reference_username or self.user
@@ -372,7 +467,7 @@ class main:
             response = self._get(
                 WEB_PROFILE_INFO_URL,
                 params={"username": SESSION_CHECK_USERNAME},
-                headers=self._session_headers(SESSION_CHECK_USERNAME),
+                headers=self._api_headers(SESSION_CHECK_USERNAME),
             )
         except InstagramError as exc:
             return "unknown", str(exc)
@@ -393,14 +488,23 @@ class main:
         return "unknown", f"HTTP {response.status_code}"
 
     def _use_provided_sessionid(self):
-        """Validate a sessionid passed as an argument or via IG_SESSIONID."""
-        if not self._provided_sessionid:
+        """Validate cookies passed as an argument or via IG_SESSIONID."""
+        if not self._provided_cookies:
             return
-        self._set_sessionid(self._provided_sessionid)
+        self._set_cookies(self._provided_cookies)
+        if not self.sessionid:
+            print(
+                f"\n{re}[!]{gr} the pasted cookies did not include a 'sessionid'; "
+                "ignoring them."
+            )
+            self._set_cookies({})
+            return
         status, detail = self._session_status()
         if status == "valid":
             self._session_verified = True
             print(f"\n{gr}[+]{nu} sessionid works{detail}")
+            if len(self._provided_cookies) > 1:
+                print(f"{gr}[+]{nu} using {len(self._provided_cookies)} cookies")
             return
         print()
         if status == "invalid":
@@ -442,16 +546,26 @@ class main:
                 print()
                 raise error from None
 
-            value = _clean_sessionid(value)
-            if not value:
+            if not value.strip():
                 raise error from None
 
-            self._set_sessionid(value)
+            cookies = _parse_cookie_input(value)
+            if not cookies.get("sessionid"):
+                print(
+                    f"{re}[!]{gr} that value did not include a 'sessionid' cookie. "
+                    "Please try again, or press Enter to cancel.\n"
+                )
+                continue
+
+            self._set_cookies(cookies)
             status, detail = self._session_status()
             if status == "valid":
                 self._session_verified = True
                 self._prompts += 1
-                print(f"{gr}[+]{nu} sessionid works{detail}\n")
+                extra = (
+                    f" | {len(cookies)} cookies" if len(cookies) > 1 else ""
+                )
+                print(f"{gr}[+]{nu} sessionid works{detail}{extra}\n")
                 return
             if status == "unknown":
                 self._prompts += 1
@@ -465,7 +579,7 @@ class main:
                 f"{re}[!]{gr} that sessionid does not work ({detail}). "
                 "Please try again, or press Enter to cancel.\n"
             )
-            self._set_sessionid(None)
+            self._set_cookies({})
 
     @staticmethod
     def _check_status(response, source):
@@ -488,9 +602,11 @@ class main:
         if response.status_code >= 400:
             raise InstagramError(f"the {source} returned HTTP {response.status_code}")
 
-    def _json_user(self, url, source, params=None):
+    def _json_user(self, url, source, params=None, mobile=False):
         """GET a JSON endpoint and pull the user object out of the response."""
-        response = self._get(url, params=params, headers=self._session_headers())
+        response = self._get(
+            url, params=params, headers=self._api_headers(mobile=mobile)
+        )
         self._check_status(response, source)
         try:
             payload = response.json()
@@ -499,6 +615,8 @@ class main:
                 raise LoginRequiredError(
                     f"the {source} served a login wall instead of JSON"
                 ) from None
+            if _looks_like_rate_limit(response.text):
+                raise RateLimitedError(f"the {source} is rate limiting this IP")
             raise InstagramError(f"the {source} returned non-JSON data") from None
 
         user = _dig(payload, "data", "user")
@@ -517,58 +635,139 @@ class main:
         raise InstagramError(message or f"the {source} returned no user object")
 
     def _fetch_from_api(self):
+        """web_profile_info on the website host."""
         return self._json_user(
             WEB_PROFILE_INFO_URL, "profile API", params={"username": self.user}
         )
 
     def _fetch_from_mobile_api(self):
+        """web_profile_info on the mobile host, with mobile app headers."""
         return self._json_user(
             MOBILE_PROFILE_INFO_URL,
             "mobile profile API",
             params={"username": self.user},
+            mobile=True,
         )
 
     def _fetch_from_username_info(self):
         return self._json_user(
-            USERNAME_INFO_URL.format(username=self.user), "username lookup API"
+            WWW_USERNAME_INFO_URL.format(username=self.user), "username lookup API"
         )
 
-    def _fetch_from_mobile_feed(self):
-        """Rebuild the profile from the mobile feed when other APIs are gated."""
-        items = self._fetch_mobile_feed_items()
-        if not items:
-            raise InstagramError("the user feed returned no posts")
-        user = items[0].get("user") if isinstance(items[0], dict) else None
-        if not isinstance(user, dict) or not user.get("username"):
-            raise InstagramError("the user feed did not include the profile")
-        if user.get("follower_count") is None and user.get("pk"):
+    def _fetch_from_mobile_username_info(self):
+        return self._json_user(
+            USERNAME_INFO_URL.format(username=self.user),
+            "mobile username lookup API",
+            mobile=True,
+        )
+
+    def _resolve_user_id(self):
+        """Find the numeric id of the target account, if Instagram exposes it."""
+        if self._user_id:
+            return self._user_id
+        for value in (self.p_data.get("pk"), self.p_data.get("id")):
+            if value:
+                self._user_id = str(value)
+                return self._user_id
+        lookups = (self._fetch_from_username_info, self._fetch_from_mobile_username_info)
+        for fetch in lookups:
             try:
-                return self._json_user(
-                    USER_INFO_URL.format(user_id=user["pk"]), "user info API"
-                )
+                user = fetch()
             except InstagramError:
-                pass
+                continue
+            value = user.get("pk") or user.get("id")
+            if value:
+                self._user_id = str(value)
+                return self._user_id
+        return None
+
+    def _profile_from_feed(self, items, source):
+        """Rebuild a profile object from feed items (each item embeds its user)."""
+        if not items:
+            raise InstagramError(f"the {source} returned no posts")
+        first = items[0] if isinstance(items[0], dict) else {}
+        user = first.get("user")
+        if not isinstance(user, dict) or not user.get("username"):
+            user = _find_user_payload(first, self.user)
+        if not isinstance(user, dict):
+            raise InstagramError(f"the {source} did not include the profile")
+        if user.get("follower_count") is None and user.get("pk"):
+            for url, mobile in (
+                (USER_INFO_URL.format(user_id=user["pk"]), True),
+                (WWW_API + "/users/{user_id}/info/".format(user_id=user["pk"]), False),
+            ):
+                try:
+                    return self._json_user(url, "user info API", mobile=mobile)
+                except InstagramError:
+                    continue
         return user
 
-    def _fetch_mobile_feed_items(self):
-        if self._mobile_feed_items is not None:
-            return self._mobile_feed_items
+    def _fetch_from_feed(self):
+        """Rebuild the profile from the website's user feed."""
+        return self._profile_from_feed(self._www_feed_items(), "user feed")
+
+    def _fetch_from_mobile_feed(self):
+        """Rebuild the profile from the mobile app's user feed."""
+        return self._profile_from_feed(self._mobile_feed_items(), "mobile user feed")
+
+    def _request_feed_items(self, url, source, mobile):
         response = self._get(
-            MOBILE_FEED_URL.format(username=self.user),
+            url,
             params={"count": FEED_PAGE_SIZE},
-            headers=self._session_headers(),
+            headers=self._api_headers(mobile=mobile),
         )
-        self._check_status(response, "user feed")
+        self._check_status(response, source)
         try:
             payload = response.json()
         except ValueError:
-            raise InstagramError("the user feed returned non-JSON data") from None
+            if _looks_like_rate_limit(response.text):
+                raise RateLimitedError(
+                    f"the {source} is rate limiting this IP"
+                ) from None
+            raise InstagramError(f"the {source} returned non-JSON data") from None
         items = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(items, list):
             message = payload.get("message") if isinstance(payload, dict) else None
-            raise InstagramError(message or "the user feed returned no posts")
-        self._mobile_feed_items = items
+            raise InstagramError(message or f"the {source} returned no posts")
         return items
+
+    def _www_feed_items(self):
+        if "www" in self._feed_items:
+            return self._feed_items["www"]
+        errors = []
+        urls = [WWW_FEED_BY_USERNAME_URL.format(username=self.user)]
+        user_id = self._resolve_user_id()
+        if user_id:
+            urls.append(WWW_FEED_BY_ID_URL.format(user_id=user_id))
+        for url in urls:
+            try:
+                items = self._request_feed_items(url, "user feed", mobile=False)
+            except InstagramError as exc:
+                errors.append(exc)
+                continue
+            self._feed_items["www"] = items
+            return items
+        rate_limited = [exc for exc in errors if isinstance(exc, RateLimitedError)]
+        raise (rate_limited or errors)[-1]
+
+    def _mobile_feed_items(self):
+        if "mobile" in self._feed_items:
+            return self._feed_items["mobile"]
+        errors = []
+        urls = [MOBILE_FEED_URL.format(username=self.user)]
+        user_id = self._resolve_user_id()
+        if user_id:
+            urls.append(MOBILE_API + "/feed/user/{user_id}/".format(user_id=user_id))
+        for url in urls:
+            try:
+                items = self._request_feed_items(url, "mobile user feed", mobile=True)
+            except InstagramError as exc:
+                errors.append(exc)
+                continue
+            self._feed_items["mobile"] = items
+            return items
+        rate_limited = [exc for exc in errors if isinstance(exc, RateLimitedError)]
+        raise (rate_limited or errors)[-1]
 
     def _find_user_in_html(self, html):
         soup = BeautifulSoup(html, "html.parser")
@@ -593,10 +792,24 @@ class main:
                 user = _find_user_payload(payload, self.user)
                 if user is not None:
                     return user
+            # Modern pages expose the profile under the xig_user_by_username key.
+            if "xig_user_by_username" in text:
+                payload = _json_after_marker(text, '"xig_user_by_username"')
+                user = (
+                    _find_user_payload(payload, self.user)
+                    if payload is not None
+                    else None
+                )
+                if user is not None and (
+                    str(user.get("username", "")).casefold() == self.user.casefold()
+                ):
+                    return user
             # Some pages embed the bootstrap payload as a bare JS object literal
             # instead of assigning it to a well known global.
             if '"username"' in text and (
-                '"edge_followed_by"' in text or '"follower_count"' in text
+                '"edge_followed_by"' in text
+                or '"follower_count"' in text
+                or '"profile_pic_url"' in text
             ):
                 brace = text.find("{")
                 if brace != -1:
@@ -637,18 +850,19 @@ class main:
                     "the profile page served a login wall instead of profile data"
                 )
             raise InstagramError(
-                "the profile page did not contain embedded profile data "
-                "(Instagram hides it from logged-out visitors)"
+                "the profile page did not contain embedded profile data"
             )
         return user
 
     def _profile_sources(self):
         return (
             ("profile API", self._fetch_from_api),
-            ("mobile profile API", self._fetch_from_mobile_api),
             ("username lookup API", self._fetch_from_username_info),
+            ("user feed", self._fetch_from_feed),
             ("profile page", self._fetch_from_html),
-            ("user feed", self._fetch_from_mobile_feed),
+            ("mobile profile API", self._fetch_from_mobile_api),
+            ("mobile username lookup API", self._fetch_from_mobile_username_info),
+            ("mobile user feed", self._fetch_from_mobile_feed),
         )
 
     def _fetch_profile(self):
@@ -714,6 +928,10 @@ class main:
             )
         else:
             hint += " Logging in with a valid sessionid can also raise the limit."
+        hint += (
+            " If it keeps happening, use another network or set "
+            "IG_PROXY=http://host:port."
+        )
         return hint
 
     def get_profile(self):
@@ -805,16 +1023,18 @@ class main:
         try:
             edges = self._fetch_feed()
         except InstagramError as exc:
-            try:
-                items = self._fetch_mobile_feed_items()
-            except InstagramError:
-                self.posts_error = str(exc)
-                return []
-            return [
-                self._normalize_post(item)
-                for item in items
-                if isinstance(item, dict)
-            ]
+            for getter in (self._www_feed_items, self._mobile_feed_items):
+                try:
+                    items = getter()
+                except InstagramError:
+                    continue
+                return [
+                    self._normalize_post(item)
+                    for item in items
+                    if isinstance(item, dict)
+                ]
+            self.posts_error = str(exc)
+            return []
 
         return [
             self._normalize_post(edge["node"])

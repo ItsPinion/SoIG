@@ -511,6 +511,109 @@ class LoginPromptTests(BaseTestCase):
             self.assertEqual(self.make()._session_status(), ("valid", ""))
 
 
+class CookieAndHostTests(BaseTestCase):
+    def test_parse_cookie_input_formats(self):
+        cases = {
+            "abc123": {"sessionid": "abc123"},
+            "sessionid=abc123": {"sessionid": "abc123"},
+            "sessionid=abc; csrftoken=def; ds_user_id=42": {
+                "sessionid": "abc",
+                "csrftoken": "def",
+                "ds_user_id": "42",
+            },
+            "Cookie: sessionid=abc; mid=xyz": {"sessionid": "abc", "mid": "xyz"},
+            '{"sessionid": "abc", "csrftoken": "def"}': {
+                "sessionid": "abc",
+                "csrftoken": "def",
+            },
+            "  ": {},
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(api._parse_cookie_input(raw), expected, raw)
+
+    def test_full_cookie_header_is_applied(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ):
+            ig = self.make(
+                sessionid="sessionid=sess1; csrftoken=csrf1; ds_user_id=99"
+            )
+            cookies = {c.name: c.value for c in ig.session.cookies}
+        self.assertEqual(ig.sessionid, "sess1")
+        self.assertEqual(cookies["csrftoken"], "csrf1")
+        self.assertEqual(cookies["ds_user_id"], "99")
+
+    def test_api_headers_include_csrf_token(self):
+        ig = self.make()
+        ig.session.cookies.set("csrftoken", "tok", domain=".instagram.com")
+        headers = ig._api_headers()
+        self.assertEqual(headers["X-CSRFToken"], "tok")
+        self.assertEqual(headers["X-IG-App-ID"], api.IG_APP_ID)
+
+    def test_mobile_headers_use_mobile_app_id(self):
+        ig = self.make()
+        headers = ig._api_headers(mobile=True)
+        self.assertEqual(headers["X-IG-App-ID"], api.MOBILE_APP_ID)
+        self.assertEqual(headers["User-Agent"], api.MOBILE_USER_AGENT)
+
+    def test_www_fallbacks_use_web_headers(self):
+        seen = []
+
+        def fake_get(url, **kwargs):
+            seen.append((url, kwargs.get("headers", {})))
+            if url == api.WWW_USERNAME_INFO_URL.format(username="prottoy.raha.r"):
+                return FakeResponse(payload={"user": USER})
+            return FakeResponse(status_code=429)
+
+        with mock.patch.object(api.main, "_get", side_effect=fake_get):
+            ig = api.main(user="prottoy.raha.r", interactive=False)
+        web_url, web_headers = seen[1]
+        self.assertTrue(web_url.startswith("https://www.instagram.com/"))
+        self.assertEqual(web_headers.get("X-IG-App-ID"), api.IG_APP_ID)
+        self.assertEqual(ig.output["followers"], "120")
+
+    def test_feed_by_id_after_username_feed_fails(self):
+        def fake_get(url, **kwargs):
+            if url == api.WWW_FEED_BY_USERNAME_URL.format(username="prottoy.raha.r"):
+                return FakeResponse(status_code=404)
+            if url == api.WWW_FEED_BY_ID_URL.format(user_id="777"):
+                return FakeResponse(payload={"items": ThrottlingTests.ITEMS})
+            raise AssertionError(url)
+
+        ig = self.make()
+        ig.p_data = {"pk": "777"}
+        with mock.patch.object(api.main, "_get", side_effect=fake_get):
+            items = ig._www_feed_items()
+        self.assertEqual(items, ThrottlingTests.ITEMS)
+        profile = ig._profile_from_feed(items, "user feed")
+        self.assertEqual(profile["follower_count"], 777)
+
+    def test_xig_user_by_username_is_parsed(self):
+        html = (
+            '<script type="application/json" data-sjs>{"require":[["x",'
+            '{"xig_user_by_username":' + json.dumps(MODERN_USER) + "}]]}</script>"
+        )
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=html)):
+            user = self.make()._fetch_from_html()
+        self.assertEqual(user["follower_count"], 321)
+
+    def test_unrelated_user_in_payload_is_not_returned(self):
+        other = dict(MODERN_USER, username="someone_else")
+        html = (
+            '<script type="application/json" data-sjs>'
+            + json.dumps({"data": {"xig_user_by_username": other}})
+            + "</script>"
+        )
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=html)):
+            with self.assertRaises(api.InstagramError):
+                self.make()._fetch_from_html()
+
+    def test_proxy_from_environment(self):
+        with mock.patch.dict(os.environ, {"IG_PROXY": "http://127.0.0.1:8888"}):
+            ig = self.make()
+        self.assertEqual(ig.session.proxies.get("https"), "http://127.0.0.1:8888")
+
+
 class ThrottlingTests(BaseTestCase):
     ITEMS = [
         {
@@ -588,12 +691,12 @@ class ThrottlingTests(BaseTestCase):
 
     def test_feed_rebuilds_profile_and_posts(self):
         def fake_get(url, **kwargs):
-            if url in (api.WEB_PROFILE_INFO_URL, api.MOBILE_PROFILE_INFO_URL):
-                return FakeResponse(status_code=429)
+            if url == api.WWW_FEED_BY_USERNAME_URL.format(username="prottoy.raha.r"):
+                return FakeResponse(payload={"items": self.ITEMS})
             if url == api.GRAPHQL_URL:
                 return FakeResponse(status_code=429)
-            if url.startswith(api.MOBILE_API):
-                return FakeResponse(payload={"items": self.ITEMS})
+            if "/api/v1/" in url:
+                return FakeResponse(status_code=429)
             raise AssertionError(url)
 
         with mock.patch.object(api.main, "_get", side_effect=fake_get):
