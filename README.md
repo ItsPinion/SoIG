@@ -127,9 +127,36 @@ sessionid SoIG prints a notice up front and falls back to the public metadata
 $ python3 main.py --username <username> --login
 ```
 
-`--debug` shows which sources were tried and why each failed, which is the
-quickest way to see whether you are hitting a login wall, a 429, or a stripped
-page.
+#### Step trace
+
+Every run prints a `[step]` line for each stage, so a bad result can be traced
+to the request that caused it:
+
+```text
+[+] getting profile ...
+[step] target: headlines.ban | login: False | save session: True | proxy: no
+[step] transport: curl_cffi (Chrome impersonation)
+[step] saved session: /home/you/.config/SoIG/session.json (csrftoken, sessionid)
+[step] checking the saved session with Instagram ...
+[step] saved session check: valid (HTTP 200)
+[+] using the saved session (logged in as @you) (/home/you/.config/SoIG/session.json)
+[step] session: set
+[step] trying 8 profile sources ...
+[step] 1/8 profile API ...
+[step] 1/8 profile API: rate limited (HTTP 429, 0.1s)
+[step] 2/8 profile page ...
+[step] profile page: HTTP 200, 318214 characters
+[step] profile page: no embedded profile JSON, only OpenGraph metadata (bio and posts are stripped for this request)
+[step] 2/8 profile page: ok (HTTP 200, 0.6s)
+[step] profile source: profile page metadata (metadata only)
+[step] not asking for another sessionid: the current one is valid, so Instagram is refusing the full profile for this account/IP
+[step] posts: loading the first page ...
+[step] posts: none available (the post feed returned non-JSON data)
+[step] done in 3.4s
+```
+
+`--debug` additionally prints the exact URL, HTTP status and response size of
+every request.
 
 The prompt works in a normal terminal (input hidden) and also when input is
 piped or comes from an IDE run pane (input visible). If no input is available at

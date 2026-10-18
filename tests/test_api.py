@@ -737,6 +737,76 @@ class UpgradeTests(BaseTestCase):
         self.assertEqual(ig.session.cookies.get_dict().get("csrftoken"), "csrf")
 
 
+ANSI = __import__("re").compile(r"\x1b\[[0-9;]*m")
+
+
+class StepTraceTests(BaseTestCase):
+    """Every stage must announce itself so a failure can be located."""
+
+    def test_successful_run_prints_the_steps(self):
+        out = io.StringIO()
+        with mock.patch.object(
+            api.main,
+            "_get",
+            return_value=FakeResponse(payload={"data": {"user": dict(USER)}}),
+        ), contextlib.redirect_stdout(out):
+            self.new_main(user="prottoy.raha.r", interactive=False)
+        text = ANSI.sub("", out.getvalue())
+        for expected in (
+            "[step] target:",
+            "[step] transport:",
+            "[step] trying",
+            "/8 profile API ...",
+            ": ok (HTTP",
+            "[step] done in",
+        ):
+            self.assertIn(expected, text)
+
+    def test_every_failed_source_is_named_with_its_status(self):
+        def fake_get(url, **kwargs):
+            return FakeResponse(status_code=429)
+
+        out = io.StringIO()
+        with mock.patch.object(
+            api.main, "_get", side_effect=fake_get
+        ), contextlib.redirect_stdout(out):
+            with self.assertRaises(api.InstagramError):
+                self.new_main(user="prottoy.raha.r", interactive=False)
+        text = ANSI.sub("", out.getvalue())
+        self.assertIn("1/8 profile API", text)
+        self.assertIn("2/8 profile page", text)
+        self.assertIn("rate limited (HTTP 429", text)
+
+    def test_metadata_only_run_names_the_stripped_payload(self):
+        html = MetadataFallbackTests.META_HTML
+        out = io.StringIO()
+        with mock.patch.object(
+            api.main, "_get", return_value=FakeResponse(text=html)
+        ), contextlib.redirect_stdout(out):
+            self.new_main(user="_thessb17_", interactive=False)
+        text = ANSI.sub("", out.getvalue())
+        self.assertIn("no embedded profile JSON", text)
+        self.assertIn("profile source: profile page metadata", text)
+
+    def test_verified_session_is_not_offered_again(self):
+        out = io.StringIO()
+        meta = FakeResponse(text=MetadataFallbackTests.META_HTML)
+        with mock.patch.object(
+            api.main, "_get", return_value=meta
+        ), mock.patch.object(
+            api.main, "_session_status", return_value=("valid", " (logged in as @x)")
+        ), mock.patch("api.api._read_prompt") as prompt:
+            with contextlib.redirect_stdout(out):
+                ig = self.new_main(
+                    user="_thessb17_", sessionid="good", interactive=False
+                )
+                ig.print_data_()
+        prompt.assert_not_called()
+        text = ANSI.sub("", out.getvalue())
+        self.assertIn("not asking for another sessionid", text)
+        self.assertIn("logging in again will not help", text)
+
+
 class MetadataFallbackTests(BaseTestCase):
     META_HTML = (
         '<html><head>'

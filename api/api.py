@@ -530,11 +530,26 @@ class main:
         self._stored_session = (
             {} if self._provided_cookies else load_session(self.session_file)
         )
+        self._last_status = None
+        self._last_url = ""
+        self._last_bytes = 0
         self.get_profile()
 
     def _debug(self, message):
         if self.debug:
             print(f"{cy}[debug]{nu} {message}")
+
+    @staticmethod
+    def _step(message):
+        """Print a numbered-free progress line so a failure can be located."""
+        print(f"{cy}[step]{nu} {message}")
+
+    def _status_text(self):
+        return (
+            f"HTTP {self._last_status}"
+            if self._last_status is not None
+            else "no response"
+        )
 
     def _new_session(self, impersonate=None, proxy=None):
         """Build the HTTP session, impersonating Chrome when curl_cffi exists.
@@ -557,10 +572,20 @@ class main:
 
     def _get(self, url, **kwargs):
         kwargs.setdefault("timeout", REQUEST_TIMEOUT)
+        self._last_url = url
         try:
-            return self.session.get(url, **kwargs)
+            response = self.session.get(url, **kwargs)
         except Exception as exc:  # transport errors differ per backend
+            self._last_status = None
+            self._debug(f"GET {url} failed: {exc}")
             raise InstagramError(f"could not reach {url}: {exc}") from exc
+        self._last_status = getattr(response, "status_code", None)
+        try:
+            self._last_bytes = len(getattr(response, "content", b"") or b"")
+        except TypeError:
+            self._last_bytes = 0
+        self._debug(f"GET {url} -> {self._status_text()} ({self._last_bytes} bytes)")
+        return response
 
     def _set_cookies(self, cookies):
         """Attach every cookie from a parsed mapping (or clear the jar)."""
@@ -706,7 +731,9 @@ class main:
             )
             self._set_cookies({})
             return
+        self._step("checking the sessionid with Instagram ...")
         status, detail = self._session_status()
+        self._step(f"sessionid check: {status} ({self._status_text()})")
         if status == "valid":
             self._session_verified = True
             print(f"\n{gr}[+]{nu} sessionid works{detail}")
@@ -732,8 +759,14 @@ class main:
         """Reuse the cookies saved by an earlier run when they still work."""
         if not self._stored_session:
             return
+        self._step(
+            f"saved session: {self.session_file} "
+            f"({', '.join(sorted(self._stored_session))})"
+        )
         self._set_cookies(self._stored_session)
+        self._step("checking the saved session with Instagram ...")
         status, detail = self._session_status()
+        self._step(f"saved session check: {status} ({self._status_text()})")
         if status == "valid":
             self._session_verified = True
             print(
@@ -782,7 +815,12 @@ class main:
                 if self._session_verified or self._prompts >= 3:
                     # Retrying with another cookie will not help: Instagram is
                     # throttling or refusing this IP, not the session.
+                    self._step(
+                        "login wall with a verified session -> not asking for "
+                        "another sessionid"
+                    )
                     raise InstagramError(str(exc)) from None
+                self._step("login required -> asking for a sessionid")
                 self._prompt_for_sessionid(exc)
             except RateLimitedError as exc:
                 if (
@@ -793,6 +831,10 @@ class main:
                 ):
                     # No session yet and Instagram is refusing the requests:
                     # let the user try an authenticated one before giving up.
+                    self._step(
+                        "every source was rate limited and no session is set "
+                        "-> asking for a sessionid"
+                    )
                     print(
                         f"\n{re}[!]{gr} Instagram refused every request and no "
                         "session is set. Paste a sessionid to retry with an "
@@ -807,6 +849,10 @@ class main:
                     raise
                 attempt += 1
                 wait = exc.retry_after or self.retry_wait
+                self._step(
+                    f"rate limited -> waiting {wait}s and retrying "
+                    f"({attempt}/{self.retries})"
+                )
                 print(
                     f"\n{re}[!]{nu} rate limited; retrying in {wait}s "
                     f"({attempt}/{self.retries}) ..."
@@ -898,8 +944,12 @@ class main:
         print(f"\n{re}[!]{gr} {LOGIN_HELP}\n")
         self._prompt_for_cookies()
 
-    @staticmethod
-    def _check_status(response, source):
+    def _check_status(self, response, source):
+        self._last_status = getattr(response, "status_code", None)
+        try:
+            self._last_bytes = len(getattr(response, "content", b"") or b"")
+        except TypeError:
+            self._last_bytes = 0
         if response.status_code == 404:
             raise InstagramError(f"the {source} returned HTTP 404 (account not found)")
         if response.status_code == 429:
@@ -1185,6 +1235,9 @@ class main:
             },
         )
         self._check_status(response, "profile page")
+        self._step(
+            f"profile page: {self._status_text()}, {len(response.text)} characters"
+        )
         user = self._find_user_in_html(response.text)
         if user is not None:
             self.data_source = "profile page"
@@ -1196,6 +1249,10 @@ class main:
             # enough for the headline numbers.
             self.limited_data = True
             self.data_source = "profile page metadata"
+            self._step(
+                "profile page: no embedded profile JSON, only OpenGraph "
+                "metadata (bio and posts are stripped for this request)"
+            )
             return user
 
         if _looks_like_rate_limit(response.text):
@@ -1227,12 +1284,21 @@ class main:
         problems = []
         login_required = False
         rate_limit = None
-        for label, fetch in self._profile_sources():
+        sources = self._profile_sources()
+        total = len(sources)
+        self._step(f"trying {total} profile sources ...")
+        for number, (label, fetch) in enumerate(sources, 1):
+            started = time.monotonic()
+            self._step(f"{number}/{total} {label} ...")
             try:
                 user = fetch()
             except RateLimitedError as exc:
                 problems.append(f"{label}: {exc}")
                 self._debug(f"{label}: {exc}")
+                self._step(
+                    f"{number}/{total} {label}: rate limited "
+                    f"({self._status_text()}, {time.monotonic() - started:.1f}s)"
+                )
                 if rate_limit is None or (
                     exc.retry_after or 0
                 ) > (rate_limit.retry_after or 0):
@@ -1242,16 +1308,29 @@ class main:
                 login_required = True
                 problems.append(f"{label}: {exc}")
                 self._debug(f"{label}: {exc}")
+                self._step(
+                    f"{number}/{total} {label}: login required "
+                    f"({self._status_text()}, {time.monotonic() - started:.1f}s)"
+                )
                 continue
             except InstagramError as exc:
                 problems.append(f"{label}: {exc}")
                 self._debug(f"{label}: {exc}")
+                self._step(
+                    f"{number}/{total} {label}: failed ({self._status_text()}) "
+                    f"-> {exc}"
+                )
                 continue
             if user:
                 self._debug(f"{label}: ok")
+                self._step(
+                    f"{number}/{total} {label}: ok ({self._status_text()}, "
+                    f"{time.monotonic() - started:.1f}s)"
+                )
                 return user
             problems.append(f"{label}: no profile data returned")
             self._debug(f"{label}: no profile data returned")
+            self._step(f"{number}/{total} {label}: no profile data returned")
 
         details = "\n    ".join(problems)
         message = f"could not retrieve profile data for '{self.user}'.\n    {details}"
@@ -1298,8 +1377,10 @@ class main:
         return hint
 
     def _announce_transport(self):
-        backend = "curl_cffi (Chrome impersonation)" if self.impersonating else "requests"
-        self._debug(f"transport: {backend}")
+        backend = (
+            "curl_cffi (Chrome impersonation)" if self.impersonating else "requests"
+        )
+        self._step(f"transport: {backend}")
         if (
             not self._provided_cookies
             and not self._stored_session
@@ -1315,17 +1396,31 @@ class main:
             )
 
     def get_profile(self):
-        extra.write(f"\n{gr}[+]{nu} getting profile ...")
+        started = time.monotonic()
+        extra.write(f"\n{gr}[+]{nu} getting profile ...\n")
+        self._step(
+            f"target: {self.user} | login: {self.force_login} | save session: "
+            f"{self.save_cookies} | proxy: {'yes' if self.session.proxies else 'no'}"
+        )
         self._announce_transport()
         self._use_provided_sessionid()
         if not self.sessionid and not self.force_login:
             self._use_stored_session()
         if self.force_login:
             self.offer_login()
+        self._step(
+            "session: " + ("set" if self.sessionid else "none (public data only)")
+        )
         self.p_data = self._fetch_profile_with_login()
+        self._step(
+            f"profile source: {self.data_source or 'unknown'} "
+            f"({'full' if not self.limited_data else 'metadata only'})"
+        )
         if self.limited_data:
             self._upgrade_limited_profile()
-        return self._apply_profile()
+        result = self._apply_profile()
+        self._step(f"done in {time.monotonic() - started:.1f}s")
+        return result
 
     def _apply_profile(self):
         """Derive the output, posts and tags from ``self.p_data``."""
@@ -1401,15 +1496,18 @@ class main:
 
     def _load_posts(self):
         """Normalise the posts from the profile payload or the GraphQL feed."""
+        self._step("posts: loading the first page ...")
         edges = _dig(
             self.p_data, "edge_owner_to_timeline_media", "edges", default=[]
         )
         if isinstance(edges, list) and edges:
-            return [
+            posts = [
                 self._normalize_post(edge["node"])
                 for edge in edges
                 if isinstance(edge, dict) and isinstance(edge.get("node"), dict)
             ]
+            self._step(f"posts: {len(posts)} from the profile payload")
+            return posts
 
         try:
             edges = self._fetch_feed()
@@ -1425,13 +1523,16 @@ class main:
                     if isinstance(item, dict)
                 ]
             self.posts_error = str(exc)
+            self._step(f"posts: none available ({exc})")
             return []
 
-        return [
+        posts = [
             self._normalize_post(edge["node"])
             for edge in edges
             if isinstance(edge, dict) and isinstance(edge.get("node"), dict)
         ]
+        self._step(f"posts: {len(posts)} from the GraphQL feed")
+        return posts
 
     def _fetch_feed(self):
         """Fetch the first page of the user's posts from Instagram's feed query."""
@@ -1542,6 +1643,11 @@ class main:
     def _upgrade_limited_profile(self):
         """Offer a login when Instagram only exposed the public metadata."""
         if self._session_verified:
+            self._step(
+                "not asking for another sessionid: the current one is valid, "
+                "so Instagram is refusing the full profile for this "
+                "account/IP"
+            )
             return
         if not self.interactive:
             self._explain_offline_login()
@@ -1583,7 +1689,14 @@ class main:
 
     def _warn_limited_data(self):
         if self.limited_data and not self._warned_limited:
-            if self.impersonating:
+            if self._session_verified:
+                advice = (
+                    "The session itself is valid, so logging in again will not "
+                    "help: Instagram is refusing the full profile for this "
+                    "account/IP. Wait a few minutes and retry, or try another "
+                    "network with --proxy."
+                )
+            elif self.impersonating:
                 advice = (
                     "Instagram stripped the full payload even with browser "
                     "impersonation; try another network or --proxy."
@@ -1597,7 +1710,6 @@ class main:
                 f"{re}[!]{gr} only the public profile metadata was available "
                 f"({self.data_source}): followers/following/posts are shown, but "
                 f"bio, posts and tags are unavailable.\n"
-                f"    Log in with: python3 main.py -u {self.user} --login\n"
                 f"    {advice}\n"
             )
             self._warned_limited = True
