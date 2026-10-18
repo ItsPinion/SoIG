@@ -24,6 +24,8 @@ ap.add_argument("--retry-wait", type=int, default=0, metavar="SECONDS",
                      "(or set IG_RETRY_WAIT)")
 ap.add_argument("--login", action="store_true",
                 help="ask for an Instagram sessionid before scraping")
+ap.add_argument("--debug", action="store_true",
+                help="show which profile sources were tried and why they failed")
 args = vars(ap.parse_args())
 
 os.system('clear') if os.name == 'posix' else os.system('cls')
@@ -35,6 +37,7 @@ try:
         impersonate=False if args["no_impersonate"] else None,
         retry_wait=retry_wait,
         login=args["login"],
+        debug=args["debug"],
     )
 except InstagramError as exc:
     print(f"\n{re}[!]{nu} {exc}\n")

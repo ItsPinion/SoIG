@@ -5,6 +5,8 @@ Run from the repository root with::
     python -m unittest discover -s tests
 """
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -520,6 +522,38 @@ META_HTML = (
     '<meta property="og:image" content="https://cdn.example/avatar.jpg" />'
     "</head><body></body></html>"
 )
+
+
+class SessionNoticeTests(BaseTestCase):
+    def test_warns_when_no_session_is_set(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.make()
+        text = out.getvalue()
+        self.assertIn("no sessionid is set", text)
+        self.assertIn("--login", text)
+
+    def test_no_warning_when_sessionid_supplied(self):
+        out = io.StringIO()
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ), contextlib.redirect_stdout(out):
+            self.make(sessionid="good")
+        self.assertNotIn("no sessionid is set", out.getvalue())
+
+    def test_debug_lists_sources(self):
+        def fake_get(url, **kwargs):
+            return FakeResponse(status_code=429)
+
+        out = io.StringIO()
+        with mock.patch.object(
+            api.main, "_get", side_effect=fake_get
+        ), contextlib.redirect_stdout(out):
+            with self.assertRaises(api.InstagramError):
+                api.main(user="prottoy.raha.r", interactive=False, debug=True)
+        text = out.getvalue()
+        self.assertIn("[debug]", text)
+        self.assertIn("profile page", text)
 
 
 class UpgradeTests(BaseTestCase):

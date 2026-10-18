@@ -125,6 +125,20 @@ other sources for the same profile:
 It also loads `instagram.com` once per session so requests carry a matching
 `csrftoken`.
 
+#### Getting the full profile (bio, posts, tags)
+
+Instagram only ships the full profile payload to logged-in sessions. Without a
+sessionid SoIG prints a notice up front and falls back to the public metadata
+(name, followers, following, posts, avatar). To get everything:
+
+```sh
+$ python3 main.py --username <username> --login
+```
+
+`--debug` shows which sources were tried and why each failed, which is the
+quickest way to see whether you are hitting a login wall, a 429, or a stripped
+page.
+
 #### Browser impersonation (recommended)
 
 Instagram strips the embedded JSON payload and rate limits harder for Python
@@ -173,6 +187,7 @@ A simple workflow of command used to run SoIG with a Description.
 | `--proxy PROXY`                       | route requests through an HTTP(S) proxy (or set `IG_PROXY`). |
 | `--retry-wait SECONDS`                | wait and retry once after a 429 (or set `IG_RETRY_WAIT`).    |
 | `--no-impersonate`                    | disable browser TLS impersonation (`curl_cffi`).             |
+| `--debug`                             | show each profile source that was tried and why it failed.   |
 
 ## Running the tests
 

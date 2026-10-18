@@ -398,6 +398,7 @@ class main:
         retry_wait=0,
         retries=1,
         login=False,
+        debug=False,
     ):
         self.user = user.strip().lstrip("@").rstrip("/")
         self.base_dir = os.getcwd()
@@ -435,7 +436,12 @@ class main:
             sessionid if sessionid is not None else os.environ.get("IG_SESSIONID", "")
         )
         self.force_login = login
+        self.debug = debug
         self.get_profile()
+
+    def _debug(self, message):
+        if self.debug:
+            print(f"{cy}[debug]{nu} {message}")
 
     def _new_session(self, impersonate=None, proxy=None):
         """Build the HTTP session, impersonating Chrome when curl_cffi exists.
@@ -1047,6 +1053,7 @@ class main:
                 user = fetch()
             except RateLimitedError as exc:
                 problems.append(f"{label}: {exc}")
+                self._debug(f"{label}: {exc}")
                 if rate_limit is None or (
                     exc.retry_after or 0
                 ) > (rate_limit.retry_after or 0):
@@ -1055,13 +1062,17 @@ class main:
             except LoginRequiredError as exc:
                 login_required = True
                 problems.append(f"{label}: {exc}")
+                self._debug(f"{label}: {exc}")
                 continue
             except InstagramError as exc:
                 problems.append(f"{label}: {exc}")
+                self._debug(f"{label}: {exc}")
                 continue
             if user:
+                self._debug(f"{label}: ok")
                 return user
             problems.append(f"{label}: no profile data returned")
+            self._debug(f"{label}: no profile data returned")
 
         details = "\n    ".join(problems)
         message = f"could not retrieve profile data for '{self.user}'.\n    {details}"
@@ -1107,8 +1118,20 @@ class main:
         )
         return hint
 
+    def _announce_transport(self):
+        backend = "curl_cffi (Chrome impersonation)" if self.impersonating else "requests"
+        self._debug(f"transport: {backend}")
+        if not self._provided_cookies and not self.force_login:
+            print(
+                f"\n{re}[!]{gr} no sessionid is set: Instagram will only expose the "
+                "public profile metadata (name, followers, following, posts).\n"
+                f"    For bio, posts and tags run: python3 main.py -u {self.user} "
+                "--login\n"
+            )
+
     def get_profile(self):
         extra.write(f"\n{gr}[+]{nu} getting profile ...")
+        self._announce_transport()
         self._use_provided_sessionid()
         if self.force_login:
             self.offer_login()
@@ -1373,7 +1396,9 @@ class main:
             print(
                 f"{re}[!]{gr} only the public profile metadata was available "
                 f"({self.data_source}): followers/following/posts are shown, but "
-                f"bio, posts and tags are unavailable. {advice}\n"
+                f"bio, posts and tags are unavailable.\n"
+                f"    Log in with: python3 main.py -u {self.user} --login\n"
+                f"    {advice}\n"
             )
             self._warned_limited = True
 
