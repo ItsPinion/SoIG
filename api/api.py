@@ -41,6 +41,17 @@ WEB_PROFILE_INFO_URL = "https://www.instagram.com/api/v1/users/web_profile_info/
 GRAPHQL_URL = "https://www.instagram.com/graphql/query/"
 IG_APP_ID = "936619743392459"
 FEED_DOC_ID = "9310670392322965"
+# PolarisProfilePageContentQuery: the query Instagram's own web client uses
+# for profile pages since web_profile_info started answering 400/429.
+PROFILE_DOC_IDS = (
+    "28036671149327607",
+    "27937681195819736",
+    "25980296051578533",
+)
+IPHONE_USER_AGENT = (
+    "Instagram 275.0.0.27.98 (iPhone14,5; iOS 17_4; en_US; en; scale=3.00; "
+    "1170x2532; 458229237)"
+)
 FEED_PAGE_SIZE = 12
 SESSION_CHECK_URL = "https://www.instagram.com/api/v1/accounts/edit/web_form_data/"
 SESSION_CHECK_USERNAME = "instagram"
@@ -434,6 +445,68 @@ def _find_user_payload(payload, username=None):
     return fallback if wanted is None else None
 
 
+def inspect_page(path):
+    """Describe a saved HTML page so a stripped payload can be diagnosed.
+
+    Prints how often each payload marker occurs, then shows the largest
+    scripts and a short snippet around the first interesting key. Returns
+    True when the file could be read.
+    """
+    try:
+        html = Path(path).expanduser().read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"{re}[!]{gr} could not read {path}: {exc}")
+        return False
+
+    print(f"{gr}[+]{nu} {path}: {len(html)} characters")
+    markers = (
+        "xig_user_by_username",
+        "follower_count",
+        "biography",
+        "edge_owner_to_timeline_media",
+        "profile_pic_url",
+        "data-sjs",
+        "xdt_api",
+        "__bbox",
+        "web_profile_info",
+        "window._sharedData",
+        "require_login",
+        "consent",
+        "checkpoint",
+    )
+    for name in markers:
+        print(f"    {name:<30} {html.count(name)}")
+
+    soup = BeautifulSoup(html, "html.parser")
+    scripts = soup.find_all("script")
+    json_scripts = [
+        script
+        for script in scripts
+        if script.get("type") in ("application/json", "application/ld+json")
+    ]
+    print(f"    script tags                    {len(scripts)}")
+    print(f"    JSON script tags               {len(json_scripts)}")
+    largest = sorted(scripts, key=lambda s: len(s.get_text() or ""), reverse=True)
+    for index, script in enumerate(largest[:5], 1):
+        text = script.get_text() or ""
+        head = " ".join(text[:110].split())
+        print(
+            f"    script {index}: {len(text)} chars, type={script.get('type')}, "
+            f"starts: {head}"
+        )
+
+    print("    contexts:")
+    seen = set()
+    for key in ('"biography"', '"profile_pic_url"', "xdt_api", "xig_user", "__bbox"):
+        index = html.find(key)
+        if index == -1 or key in seen:
+            continue
+        seen.add(key)
+        snippet = " ".join(html[max(0, index - 60):index + 140].split())
+        print(f"      {key} @ {index}: ...{snippet}...")
+    return True
+
+
 class extra:
     @staticmethod
     def tiny_url(url):
@@ -562,6 +635,7 @@ class main:
         impersonating transport is used whenever it is installed.
         """
         want_impersonation = True if impersonate is None else bool(impersonate)
+        self.impersonation_missing = want_impersonation and curl_requests is None
         if want_impersonation and curl_requests is not None:
             self.impersonating = True
             session = curl_requests.Session(impersonate="chrome")
@@ -776,6 +850,13 @@ class main:
                 f"\n{gr}[+]{nu} using the saved session{detail} "
                 f"({self.session_file})"
             )
+            if "ds_user_id" not in self._stored_session:
+                print(
+                    f"{re}[!]{gr} only the sessionid is saved; Instagram's web "
+                    "endpoints also expect 'ds_user_id' and 'mid'.\n"
+                    "    Run with --login and paste the whole Cookie header to "
+                    "store them.\n"
+                )
             return
         if status == "invalid":
             print(
@@ -889,7 +970,9 @@ class main:
 
         while True:
             try:
-                value = _read_prompt(f"{gr}sessionid{nu}: ")
+                value = _read_prompt(
+                    f"{gr}sessionid{nu} (or the whole Cookie header): "
+                )
             except (EOFError, KeyboardInterrupt):
                 print()
                 return False
@@ -976,10 +1059,12 @@ class main:
         if response.status_code >= 400:
             raise InstagramError(f"the {source} returned HTTP {response.status_code}")
 
-    def _json_user(self, url, source, params=None, mobile=False):
+    def _json_user(self, url, source, params=None, mobile=False, headers=None):
         """GET a JSON endpoint and pull the user object out of the response."""
         response = self._get(
-            url, params=params, headers=self._api_headers(mobile=mobile)
+            url,
+            params=params,
+            headers=headers if headers is not None else self._api_headers(mobile=mobile),
         )
         self._check_status(response, source)
         try:
@@ -1054,6 +1139,44 @@ class main:
             "mobile username lookup API",
             mobile=True,
         )
+
+    def _fetch_from_profile_graphql(self):
+        """Ask the GraphQL profile query (PolarisProfilePageContentQuery)."""
+        user_id = self._resolve_user_id()
+        if not user_id:
+            raise InstagramError("could not resolve the numeric user id")
+        variables = {
+            "id": user_id,
+            "username": self.user,
+            "render_surface": "PROFILE",
+            "enable_integrity_filters": True,
+            "__relay_internal__pv__PolarisCannesGuardianExperienceEnabledrelayprovider": True,
+            "__relay_internal__pv__PolarisCASB976ProfileEnabledrelayprovider": False,
+            "__relay_internal__pv__PolarisWebSchoolsEnabledrelayprovider": False,
+        }
+        headers = {
+            **self._session_headers(),
+            "User-Agent": IPHONE_USER_AGENT,
+            "X-IG-App-ID": IG_APP_ID,
+            "Accept": "*/*",
+            "Referer": f"https://www.instagram.com/{self.user}/",
+        }
+        problems = []
+        for doc_id in PROFILE_DOC_IDS:
+            try:
+                return self._json_user(
+                    GRAPHQL_URL,
+                    "profile GraphQL",
+                    params={
+                        "doc_id": doc_id,
+                        "variables": json.dumps(variables, separators=(",", ":")),
+                    },
+                    headers=headers,
+                )
+            except InstagramError as exc:
+                problems.append(f"{doc_id}: {exc}")
+                continue
+        raise InstagramError("; ".join(problems) or "no profile doc_id answered")
 
     def _fetch_from_user_info(self):
         """The app's user info endpoint, reached via the numeric id.
@@ -1335,6 +1458,7 @@ class main:
             ("profile API", self._fetch_from_api),
             ("profile page", self._fetch_from_html),
             ("profile JSON", self._fetch_from_page_json),
+            ("profile GraphQL", self._fetch_from_profile_graphql),
             ("username lookup API", self._fetch_from_username_info),
             ("user feed", self._fetch_from_feed),
             ("mobile profile API", self._fetch_from_mobile_api),
@@ -1464,6 +1588,14 @@ class main:
             "curl_cffi (Chrome impersonation)" if self.impersonating else "requests"
         )
         self._step(f"transport: {backend}")
+        if self.impersonation_missing:
+            print(
+                f"\n{re}[!]{gr} curl_cffi is not installed, so requests are not "
+                "browser-impersonated.\n"
+                "    Instagram answers such clients with stripped pages, "
+                "'feedback_required' and 429s.\n"
+                "    Fix it with: pip install curl_cffi\n"
+            )
         if (
             not self._provided_cookies
             and not self._stored_session

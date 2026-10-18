@@ -806,6 +806,95 @@ class PageDumpTests(BaseTestCase):
         self.assertEqual(os.listdir(self.tmp.name), [])
 
 
+class ProfileGraphQLTests(BaseTestCase):
+    def test_profile_graphql_returns_the_user(self):
+        payload = {"data": {"user": dict(USER, biography="gql bio")}}
+        seen = []
+
+        def fake_get(url, **kwargs):
+            seen.append(kwargs.get("params", {}).get("doc_id"))
+            if kwargs.get("params", {}).get("doc_id") == api.PROFILE_DOC_IDS[1]:
+                return FakeResponse(payload=payload)
+            return FakeResponse(status_code=400, payload={"message": "bad doc"})
+
+        ig = self.make()
+        with mock.patch.object(
+            api.main, "_resolve_user_id", return_value="123"
+        ), mock.patch.object(api.main, "_get", side_effect=fake_get):
+            user = ig._fetch_from_profile_graphql()
+        self.assertEqual(user["biography"], "gql bio")
+        self.assertEqual(seen[0], api.PROFILE_DOC_IDS[0])
+        self.assertEqual(seen[1], api.PROFILE_DOC_IDS[1])
+
+    def test_profile_graphql_needs_an_id(self):
+        ig = self.make()
+        with mock.patch.object(api.main, "_resolve_user_id", return_value=None):
+            with self.assertRaisesRegex(api.InstagramError, "numeric user id"):
+                ig._fetch_from_profile_graphql()
+
+    def test_profile_graphql_is_a_profile_source(self):
+        labels = [label for label, _ in self.make()._profile_sources()]
+        self.assertIn("profile GraphQL", labels)
+
+
+class PageInspectTests(BaseTestCase):
+    def test_reports_markers_and_script_sizes(self):
+        path = os.path.join(self.tmp.name, "page.html")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(
+                "<html><script type='application/json'>"
+                '{"xig_user_by_username": {"username": "x", "biography": ""}}'
+                "</script></html>"
+            )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertTrue(api.inspect_page(path))
+        text = out.getvalue()
+        self.assertIn("xig_user_by_username", text)
+        self.assertIn("JSON script tags", text)
+        self.assertIn('"biography"', text)
+
+    def test_missing_file_returns_false(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertFalse(api.inspect_page(os.path.join(self.tmp.name, "no.html")))
+        self.assertIn("could not read", out.getvalue())
+
+
+class EnvironmentWarningTests(BaseTestCase):
+    def test_missing_curl_cffi_is_warned_about(self):
+        out = io.StringIO()
+        with mock.patch.object(
+            api, "curl_requests", None
+        ), contextlib.redirect_stdout(out):
+            self.make()
+        text = out.getvalue()
+        self.assertIn("curl_cffi is not installed", text)
+        self.assertIn("pip install curl_cffi", text)
+
+    def test_incomplete_saved_session_is_flagged(self):
+        api.save_session({"sessionid": "only"}, self.session_path)
+        out = io.StringIO()
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", " (logged in as @x)")
+        ), contextlib.redirect_stdout(out):
+            self.make()
+        text = out.getvalue()
+        self.assertIn("only the sessionid is saved", text)
+        self.assertIn("whole Cookie header", text)
+
+    def test_complete_saved_session_is_not_flagged(self):
+        api.save_session(
+            {"sessionid": "full", "ds_user_id": "1", "mid": "m"}, self.session_path
+        )
+        out = io.StringIO()
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", " (logged in as @x)")
+        ), contextlib.redirect_stdout(out):
+            self.make()
+        self.assertNotIn("only the sessionid is saved", out.getvalue())
+
+
 class StepTraceTests(BaseTestCase):
     """Every stage must announce itself so a failure can be located."""
 
@@ -822,7 +911,7 @@ class StepTraceTests(BaseTestCase):
             "[step] target:",
             "[step] transport:",
             "[step] trying",
-            "/9 profile API ...",
+            "/10 profile API ...",
             ": ok (HTTP",
             "[step] done in",
         ):
@@ -839,8 +928,8 @@ class StepTraceTests(BaseTestCase):
             with self.assertRaises(api.InstagramError):
                 self.new_main(user="prottoy.raha.r", interactive=False)
         text = ANSI.sub("", out.getvalue())
-        self.assertIn("1/9 profile API", text)
-        self.assertIn("2/9 profile page", text)
+        self.assertIn("1/10 profile API", text)
+        self.assertIn("2/10 profile page", text)
         self.assertIn("rate limited (HTTP 429", text)
 
     def test_metadata_only_run_names_the_stripped_payload(self):

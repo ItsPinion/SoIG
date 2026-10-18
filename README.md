@@ -109,11 +109,13 @@ other sources for the same profile:
 2. the profile page's embedded JSON (`data-sjs` / `xig_user_by_username`)
 3. the profile page's OpenGraph metadata (works even when Instagram strips the
    JSON payload; gives name, followers, following, posts and avatar)
-4. `?__a=1&__d=dis` JSON
-5. `users/<username>/usernameinfo/` and `feed/user/<username>/username/`
+4. `graphql/query/` with `PolarisProfilePageContentQuery`, the query the web
+   client itself uses (see `PROFILE_DOC_IDS`; the id comes from the post feed)
+5. `?__a=1&__d=dis` JSON
+6. `users/<username>/usernameinfo/` and `feed/user/<username>/username/`
    (falling back to `feed/user/<id>/`)
-6. the same endpoints on `i.instagram.com` with the mobile app's headers
-7. `i.instagram.com/users/<id>/info/`, with the id taken from the post feed
+7. the same endpoints on `i.instagram.com` with the mobile app's headers
+8. `i.instagram.com/users/<id>/info/`, with the id taken from the post feed
    when the lookup endpoints are refused
 
 It also loads `instagram.com` once per session so requests carry a matching
@@ -143,13 +145,13 @@ to the request that caused it:
 [step] saved session check: valid (HTTP 200)
 [+] using the saved session (logged in as @you) (/home/you/.config/SoIG/session.json)
 [step] session: set
-[step] trying 9 profile sources ...
-[step] 1/9 profile API ...
-[step] 1/9 profile API: rate limited (HTTP 429, 0.1s)
-[step] 2/9 profile page ...
+[step] trying 10 profile sources ...
+[step] 1/10 profile API ...
+[step] 1/10 profile API: rate limited (HTTP 429, 0.1s)
+[step] 2/10 profile page ...
 [step] profile page: HTTP 200, 318214 characters
 [step] profile page: no embedded profile JSON, only OpenGraph metadata (bio and posts are stripped for this request)
-[step] 2/9 profile page: ok (HTTP 200, 0.6s)
+[step] 2/10 profile page: ok (HTTP 200, 0.6s)
 [step] profile source: profile page metadata (metadata only)
 [step] not asking for another sessionid: the current one is valid, so Instagram is refusing the full profile for this account/IP
 [step] posts: loading the first page ...

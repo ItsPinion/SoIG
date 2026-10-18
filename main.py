@@ -7,6 +7,7 @@ import sys
 from api.api import (
     InstagramError,
     forget_session,
+    inspect_page,
     main,
     nu,
     re,
@@ -14,7 +15,7 @@ from api.api import (
 )
 
 ap = argparse.ArgumentParser()
-ap.add_argument("-u", "--username", required=True,
+ap.add_argument("-u", "--username", default=None,
                 help="username of account to scan")
 ap.add_argument("-p", "--postscrap", action='store_true',
                 help="scrape all uploaded images info ")
@@ -39,9 +40,17 @@ ap.add_argument("--no-save-session", action="store_true",
                 help="do not save the sessionid/csrftoken to disk")
 ap.add_argument("--dump-page", default=None, metavar="PATH",
                 help="save the fetched profile page HTML for debugging")
+ap.add_argument("--inspect-page", default=None, metavar="PATH",
+                help="describe a saved profile page HTML and exit")
 ap.add_argument("--forget-session", action="store_true",
                 help="delete the saved sessionid/csrftoken and exit")
 args = vars(ap.parse_args())
+
+if args["inspect_page"]:
+    sys.exit(0 if inspect_page(args["inspect_page"]) else 1)
+
+if not args["username"]:
+    ap.error("the following arguments are required: -u/--username")
 
 if args["forget_session"]:
     removed = forget_session(args["session_file"])
