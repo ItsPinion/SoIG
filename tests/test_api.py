@@ -57,6 +57,11 @@ USER = {
 }
 
 
+# BaseTestCase replaces the warm-up GET with a no-op so no test can reach
+# instagram.com; this handle lets the warm-up test restore the real method.
+REAL_WARM_UP = api.main._warm_up_session
+
+
 class FakeResponse:
     def __init__(self, status_code=200, payload=None, text="", url="https://x/", headers=None):
         self.status_code = status_code
@@ -86,6 +91,18 @@ class BaseTestCase(unittest.TestCase):
             patcher = mock.patch.object(api.extra, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # The suite must never touch the network: the cookie warm-up GET is a
+        # no-op, and any code path that really tries to use HTTP fails loudly.
+        patcher = mock.patch.object(api.main, "_warm_up_session", lambda self: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(
+            api.main,
+            "_get",
+            side_effect=AssertionError("a test tried to use the network"),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def new_main(self, **kwargs):
         kwargs.setdefault("session_file", self.session_path)
@@ -324,6 +341,16 @@ class ModernProfileTests(BaseTestCase):
             mock.patch.object(api.main, "_fetch_profile", return_value=dict(MODERN_USER)),
             mock.patch.object(
                 api.main, "_fetch_feed", side_effect=api.InstagramError("feed blocked")
+            ),
+            mock.patch.object(
+                api.main,
+                "_www_feed_items",
+                side_effect=api.InstagramError("feed blocked"),
+            ),
+            mock.patch.object(
+                api.main,
+                "_mobile_feed_items",
+                side_effect=api.InstagramError("feed blocked"),
             ),
         ):
             ig = self.new_main(user="prottoy.raha.r")
@@ -1806,7 +1833,10 @@ class ThrottlingTests(BaseTestCase):
                 headers={"Set-Cookie": "csrftoken=tok123; Domain=.instagram.com"},
             )
 
-        with mock.patch.object(api.main, "_get", side_effect=fake_get):
+        with (
+            mock.patch.object(api.main, "_warm_up_session", REAL_WARM_UP),
+            mock.patch.object(api.main, "_get", side_effect=fake_get),
+        ):
             ig = self.make(sessionid="good")
             ig.session.cookies.set("csrftoken", "tok123", domain=".instagram.com")
             headers = ig._session_headers()
@@ -1814,7 +1844,10 @@ class ThrottlingTests(BaseTestCase):
         self.assertTrue(any(url == "https://www.instagram.com/" for url, _ in calls))
 
     def test_set_sessionid_warms_up_session(self):
-        with mock.patch.object(api.main, "_get", return_value=FakeResponse()) as getter:
+        with (
+            mock.patch.object(api.main, "_warm_up_session", REAL_WARM_UP),
+            mock.patch.object(api.main, "_get", return_value=FakeResponse()) as getter,
+        ):
             ig = self.make()
             ig._set_sessionid("abc")
         urls = [call.args[0] for call in getter.call_args_list]
