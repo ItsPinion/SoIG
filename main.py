@@ -43,7 +43,8 @@ ap.add_argument("-n", "--no-save-session", action="store_true",
 ap.add_argument("-a", "--all-posts", action="store_true",
                 help="page through the whole timeline instead of the first 12 posts")
 ap.add_argument("-m", "--max-posts", type=int, default=0, metavar="N",
-                help="with -a/--all-posts, stop after N posts (default: no limit)")
+                help="stop after N posts (pages as needed; also caps "
+                     "-a/--all-posts)")
 ap.add_argument("-D", "--dump-page", default=None, metavar="PATH",
                 help="save the fetched profile page HTML for debugging")
 ap.add_argument("-I", "--inspect-page", default=None, metavar="PATH",
@@ -73,6 +74,9 @@ USER_ONLY_FLAGS = {
     "max_posts": "-m/--max-posts",
     "dump_page": "-D/--dump-page",
 }
+if args["max_posts"] < 0:
+    ap.error("-m/--max-posts expects 0 (no limit) or a positive number")
+
 login_only = False
 if not args["username"]:
     requested = [flag for key, flag in USER_ONLY_FLAGS.items() if args[key]]

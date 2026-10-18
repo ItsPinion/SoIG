@@ -86,6 +86,11 @@ class ShortFlagTests(unittest.TestCase):
         self.assertIn("-p/--postscrap", result.stderr)
         self.assertIn("-u/--username", result.stderr)
 
+    def test_negative_max_posts_is_rejected(self):
+        result = run("-u", "someone", "-m", "-5")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--max-posts", result.stderr)
+
     def test_short_forget_session_deletes_the_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "session.json")

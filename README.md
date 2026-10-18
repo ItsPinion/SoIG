@@ -199,23 +199,39 @@ all, SoIG tells you to rerun with `--login` from a terminal.
 #### Posts and tags
 
 By default the first page of posts (up to 12) is loaded with the profile, which
-keeps a run to a couple of requests. To walk the whole timeline:
+keeps a run to a couple of requests. To load more:
 
 ```sh
-$ python3 main.py --username <username> -a                    # every post
-$ python3 main.py --username <username> -a -m 200             # first 200 posts
-$ python3 main.py --username <username> -t -a                 # tags from every caption
+$ python3 main.py --username <username> -a        # every post
+$ python3 main.py --username <username> -m 200    # exactly 200 posts
+$ python3 main.py --username <username> -a -m 200 # same 200, -a caps at -m
+$ python3 main.py --username <username> -t -a     # tags from every caption
 ```
+
+`-m/--max-posts` stands on its own: it pages as far as needed and then keeps
+exactly N posts, so `-m 2` prints 2 posts even though Instagram pages in 12s.
+With `-a` it caps the walk instead of extending it - the two flags never
+contradict each other.
 
 SoIG follows the feed's `end_cursor` one page at a time (12 posts per request,
 1 second apart), prints progress, and keeps what it already collected if a page
-is throttled:
+is throttled. A `-m N` run stops as soon as N posts are in hand and trims the
+last page down to N:
 
 ```text
 [step] posts: walking the whole timeline (8274 posts), one request every 1s ...
 [step] posts: page 2 -> 24 posts
 ...
 [step] posts: collected 8274 posts in 690 pages
+```
+
+A capped run looks like this:
+
+```text
+[step] posts: collecting 20 posts, one request every 1s ...
+[step] posts: page 2 -> 24 posts
+[step] posts: collected 24 posts in 2 pages
+[step] posts: keeping the first 20 of 24
 ```
 
 For 8k posts that is roughly 690 requests and 12 minutes - use `-m/--max-posts`
@@ -346,7 +362,7 @@ A simple workflow of command used to run SoIG with a Description.
 | `-D`, `--dump-page PATH`              | save the profile page HTML for inspection.                   |
 | `-I`, `--inspect-page PATH`            | describe a saved page HTML and exit (no `-u` needed).        |
 | `-a`, `--all-posts`                   | page through the whole timeline.                             |
-| `-m`, `--max-posts N`                 | with `--all-posts`, stop after N posts.                      |
+| `-m`, `--max-posts N`                 | stop after N posts (pages as needed; also caps `--all-posts`). |
 | `-f`, `--session-file PATH`           | where saved cookies live.                                    |
 | `-n`, `--no-save-session`             | do not save the sessionid/csrftoken to disk.                 |
 | `-F`, `--forget-session`              | delete the saved sessionid/csrftoken and exit (no `-u` needed). |

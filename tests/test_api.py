@@ -418,6 +418,44 @@ class ModernProfileTests(BaseTestCase):
         self.assertEqual(len(ig.posts), 1)
         self.assertEqual(calls, [None])
 
+    def test_max_posts_trims_the_first_page(self):
+        nodes = [{"code": f"p{n}"} for n in range(api.FEED_PAGE_SIZE)]
+        pages = {None: (nodes, True, "C1")}
+        ig, calls = self.run_with(pages, max_posts=2)
+        self.assertEqual(
+            [post["url"] for post in ig.posts],
+            ["instagram.com/p/p0", "instagram.com/p/p1"],
+        )
+        self.assertEqual(calls, [None])  # no second request needed
+
+    def test_max_posts_pages_without_all_posts(self):
+        pages = {
+            None: ([{"code": "a"}], True, "C1"),
+            "C1": ([{"code": "b"}], True, "C2"),
+            "C2": ([{"code": "c"}], True, "C3"),
+            "C3": ([{"code": "d"}], False, None),
+        }
+        ig, calls = self.run_with(pages, max_posts=3)
+        self.assertEqual(
+            [post["url"] for post in ig.posts],
+            ["instagram.com/p/a", "instagram.com/p/b", "instagram.com/p/c"],
+        )
+        self.assertEqual(calls, [None, "C1", "C2"])
+
+    def test_max_posts_caps_all_posts(self):
+        pages = {
+            None: ([{"code": "a"}, {"code": "b"}], True, "C1"),
+            "C1": ([{"code": "c"}, {"code": "d"}], False, None),
+        }
+        ig, calls = self.run_with(pages, all_posts=True, max_posts=3)
+        self.assertEqual(len(ig.posts), 3)
+        self.assertEqual(calls, [None, "C1"])
+
+    def test_max_posts_trims_profile_payload_posts(self):
+        ig = self.make(max_posts=1)
+        self.assertEqual(len(ig.posts), 1)
+        self.assertEqual(ig.tags, {"python": 2, "osint": 1})
+
     def test_max_posts_stops_the_walk(self):
         pages = {
             None: ([{"code": "a"}], True, "C1"),

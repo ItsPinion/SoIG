@@ -656,7 +656,7 @@ class main:
         self._warned_limited = False
         self.data_source = ""
         self.all_posts = bool(all_posts)
-        self.max_posts = int(max_posts or 0)
+        self.max_posts = max(0, int(max_posts or 0))
         self.retry_wait = retry_wait
         self.retries = retries
         self.proxy = (proxy or "").strip()
@@ -1902,9 +1902,17 @@ class main:
                 f"captions ({len(self.tags)} unique)"
             )
         else:
+            if self.max_posts:
+                hint = (
+                    f" (only the first {self.max_posts} posts; "
+                    "raise -m/--max-posts or add -a/--all-posts)"
+                )
+            elif self.all_posts:
+                hint = ""
+            else:
+                hint = " (first page only; try --all-posts)"
             self._step(
-                f"tags: none of the {captions} captions contain a hashtag"
-                + ("" if self.all_posts else " (first page only; try --all-posts)")
+                f"tags: none of the {captions} captions contain a hashtag{hint}"
             )
         return self.tags
 
@@ -1957,6 +1965,21 @@ class main:
             ),
         }
 
+    def _wants_more_posts(self, have):
+        """True when -a/--all-posts or -m/--max-posts asks for more than ``have``."""
+        if self.max_posts:
+            return have < self.max_posts
+        return self.all_posts
+
+    def _cap_posts(self, posts):
+        """Stop at -m/--max-posts however the posts were loaded."""
+        if self.max_posts and len(posts) > self.max_posts:
+            self._step(
+                f"posts: keeping the first {self.max_posts} of {len(posts)}"
+            )
+            return posts[: self.max_posts]
+        return posts
+
     def _load_posts(self):
         """Normalise the posts from the profile payload or the GraphQL feed."""
         self._step("posts: loading the first page ...")
@@ -1970,24 +1993,38 @@ class main:
                 if isinstance(edge, dict) and isinstance(edge.get("node"), dict)
             ]
             self._step(f"posts: {len(posts)} from the profile payload")
-            return posts
+            if not self._wants_more_posts(len(posts)):
+                return self._cap_posts(posts)
+            # The payload only carries the newest posts. Walk the feed for the
+            # rest; if it does not answer, the payload posts are still ours.
+            try:
+                feed_edges = self._fetch_all_feed_edges()
+            except InstagramError as exc:
+                self._step(f"posts: keeping the payload posts ({exc})")
+                return self._cap_posts(posts)
+            if not feed_edges:
+                return self._cap_posts(posts)
+            edges = feed_edges
 
-        try:
-            edges = self._fetch_all_feed_edges()
-        except InstagramError as exc:
-            for getter in (self._www_feed_items, self._mobile_feed_items):
-                try:
-                    items = getter()
-                except InstagramError:
-                    continue
-                return [
-                    self._normalize_post(item)
-                    for item in items
-                    if isinstance(item, dict)
-                ]
-            self.posts_error = str(exc)
-            self._step(f"posts: none available ({exc})")
-            return []
+        else:
+            try:
+                edges = self._fetch_all_feed_edges()
+            except InstagramError as exc:
+                for getter in (self._www_feed_items, self._mobile_feed_items):
+                    try:
+                        items = getter()
+                    except InstagramError:
+                        continue
+                    return self._cap_posts(
+                        [
+                            self._normalize_post(item)
+                            for item in items
+                            if isinstance(item, dict)
+                        ]
+                    )
+                self.posts_error = str(exc)
+                self._step(f"posts: none available ({exc})")
+                return []
 
         posts = [
             self._normalize_post(edge["node"])
@@ -1995,7 +2032,7 @@ class main:
             if isinstance(edge, dict) and isinstance(edge.get("node"), dict)
         ]
         self._step(f"posts: {len(posts)} from the GraphQL feed")
-        return posts
+        return self._cap_posts(posts)
 
     def _fetch_feed(self):
         """Fetch the first page of the user's posts from Instagram's feed query."""
@@ -2060,22 +2097,37 @@ class main:
         return edges, page_info if isinstance(page_info, dict) else {}
 
     def _fetch_all_feed_edges(self):
-        """Walk the whole timeline, following the feed's end cursor."""
+        """Fetch the first page, then follow the end cursor as far as asked.
+
+        One page is always requested. Later pages are walked when -a asks for
+        the whole timeline, or when -m asks for more than the first page holds.
+        The two flags are independent: -m alone pages up to N posts, and with -a
+        it caps the walk at N. Trimming happens in ``_cap_posts``.
+        """
         edges = list(self._fetch_feed())
-        if not self.all_posts:
+        target = self.max_posts
+        if not self.all_posts and not target:
+            return edges
+        if target and len(edges) >= target:
             return edges
         expected = _first_value(self.p_data, "media_count") or _dig(
             self.p_data, "edge_owner_to_timeline_media", "count"
         )
-        self._step(
-            "posts: walking the whole timeline"
-            + (f" ({expected} posts)" if expected else "")
-            + f", one request every {FEED_PAGE_DELAY:g}s ..."
-        )
+        if target:
+            self._step(
+                f"posts: collecting {target} posts, one request every "
+                f"{FEED_PAGE_DELAY:g}s ..."
+            )
+        else:
+            self._step(
+                "posts: walking the whole timeline"
+                + (f" ({expected} posts)" if expected else "")
+                + f", one request every {FEED_PAGE_DELAY:g}s ..."
+            )
         page_info = getattr(self, "_feed_page_info", {}) or {}
         page = 1
         while page_info.get("has_next_page") and page < FEED_MAX_PAGES:
-            if self.max_posts and len(edges) >= self.max_posts:
+            if target and len(edges) >= target:
                 break
             cursor = page_info.get("end_cursor")
             if not cursor:
@@ -2096,7 +2148,7 @@ class main:
                 f"posts: page {page} -> {len(edges)} posts"
                 + ("" if page_info.get("has_next_page") else " (last page)")
             )
-        if self.all_posts and len(edges) > FEED_PAGE_SIZE:
+        if page > 1:
             self._step(f"posts: collected {len(edges)} posts in {page} pages")
         return edges
 
@@ -2305,7 +2357,13 @@ class main:
                 "    The tag list is built from post captions, so an account "
                 "that does not use #hashtags has none to count.\n"
             )
-            if not self.all_posts:
+            if self.max_posts:
+                print(
+                    f"    Only the first {self.max_posts} posts were checked; "
+                    "raise --max-posts or add --all-posts "
+                    "to scan more.\n"
+                )
+            elif not self.all_posts:
                 print(
                     "    Only the first page of posts was checked; add "
                     "--all-posts to scan the whole timeline.\n"
