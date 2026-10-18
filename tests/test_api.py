@@ -354,7 +354,7 @@ class FetchTests(BaseTestCase):
             api.main, "_session_status", return_value=("valid", "")
         ):
             ig = self.make()
-        cookies = {c.name: c.value for c in ig.session.cookies}
+        cookies = ig.session.cookies.get_dict()
         self.assertEqual(cookies.get("sessionid"), "abc123")
 
 
@@ -457,7 +457,7 @@ class LoginPromptTests(BaseTestCase):
         ):
             ig = self.make(sessionid="stale")
         self.assertEqual(ig.sessionid, "")
-        self.assertEqual({c.name for c in ig.session.cookies}, set())
+        self.assertEqual(ig.session.cookies.get_dict(), {})
 
     def test_cookie_header_paste_is_understood(self):
         with mock.patch.object(
@@ -472,7 +472,7 @@ class LoginPromptTests(BaseTestCase):
         ):
             ig = self.make(sessionid='"sessionid=fresh"')
         self.assertEqual(ig.sessionid, "fresh")
-        cookies = {c.name: c.value for c in ig.session.cookies}
+        cookies = ig.session.cookies.get_dict()
         self.assertEqual(cookies.get("sessionid"), "fresh")
 
     def test_session_status_valid_from_web_form_data(self):
@@ -511,6 +511,131 @@ class LoginPromptTests(BaseTestCase):
             self.assertEqual(self.make()._session_status(), ("valid", ""))
 
 
+class MetadataFallbackTests(BaseTestCase):
+    META_HTML = (
+        '<html><head>'
+        '<meta property="og:title" '
+        'content="Thess B (@_thessb17_) • Instagram photos" />'
+        '<meta property="og:description" content="1,234 Followers, 56 Following, '
+        '78 Posts - See Instagram photos and videos from Thess B (@_thessb17_)" />'
+        '<meta property="og:image" content="https://cdn.example/avatar.jpg" />'
+        "</head><body></body></html>"
+    )
+
+    def test_profile_page_metadata_is_used_when_payload_is_stripped(self):
+        with mock.patch.object(
+            api.main, "_get", return_value=FakeResponse(text=self.META_HTML)
+        ):
+            ig = api.main(user="_thessb17_", interactive=False)
+        self.assertEqual(ig.output["followers"], "1234")
+        self.assertEqual(ig.output["following"], "56")
+        self.assertEqual(ig.output["posts"], "78")
+        self.assertEqual(ig.output["name"], "Thess B")
+        self.assertEqual(ig.output["profile pic url"], "https://cdn.example/avatar.jpg")
+        self.assertTrue(ig.limited_data)
+        self.assertEqual(ig.data_source, "profile page metadata")
+
+    def test_metadata_for_another_account_is_rejected(self):
+        with mock.patch.object(
+            api.main, "_get", return_value=FakeResponse(text=self.META_HTML)
+        ):
+            with self.assertRaises(api.InstagramError):
+                self.make(username="someone_else")._fetch_from_html()
+
+    def test_abbreviated_counts(self):
+        html = self.META_HTML.replace(
+            "1,234 Followers, 56 Following, 78 Posts",
+            "1.2M Followers, 3K Following, 9.5B Posts",
+        ).replace("@_thessb17_", "@prottoy.raha.r")
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=html)):
+            user = self.make()._fetch_from_html()
+        self.assertEqual(user["follower_count"], 1_200_000)
+        self.assertEqual(user["following_count"], 3_000)
+        self.assertEqual(user["media_count"], 9_500_000_000)
+
+    def test_login_page_metadata_is_not_mistaken_for_a_profile(self):
+        html = (
+            "<html><head><meta property='og:title' content='Login • Instagram' />"
+            "<meta property='og:description' content='See everyday moments.' />"
+            "</head></html>"
+        )
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=html)):
+            with self.assertRaises(api.InstagramError):
+                self.make()._fetch_from_html()
+
+    def test_page_json_endpoint(self):
+        response = FakeResponse(payload={"data": {"user": USER}})
+        with mock.patch.object(api.main, "_get", return_value=response):
+            user = self.make()._fetch_from_page_json()
+        self.assertEqual(user["username"], "prottoy.raha.r")
+
+    def test_session_uses_impersonation_when_available(self):
+        ig = self.make(impersonate=True)
+        if api.curl_requests is None:
+            self.assertFalse(ig.impersonating)
+        else:
+            self.assertTrue(ig.impersonating)
+
+    def test_impersonation_can_be_disabled(self):
+        self.assertFalse(self.make(impersonate=False).impersonating)
+
+    def test_works_without_curl_cffi(self):
+        with mock.patch.object(api, "curl_requests", None):
+            ig = self.make()
+            self.assertFalse(ig.impersonating)
+            self.assertEqual(ig.output["followers"], "120")
+
+    def test_retry_wait_sleeps_and_retries(self):
+        calls = []
+
+        def fetch():
+            calls.append(1)
+            if len(calls) == 1:
+                raise api.RateLimitedError("limited", retry_after=0)
+            return dict(USER)
+
+        with mock.patch.object(
+            api.main, "_fetch_profile", side_effect=fetch
+        ), mock.patch("api.api.time.sleep") as sleeper:
+            ig = api.main(
+                user="prottoy.raha.r",
+                interactive=False,
+                retry_wait=5,
+                retries=1,
+            )
+        self.assertEqual(ig.output["followers"], "120")
+        sleeper.assert_called_once_with(5)
+        self.assertEqual(len(calls), 2)
+
+    def test_retry_wait_honours_retry_after(self):
+        calls = []
+
+        def fetch():
+            calls.append(1)
+            if len(calls) == 1:
+                raise api.RateLimitedError("limited", retry_after=120)
+            return dict(USER)
+
+        with mock.patch.object(
+            api.main, "_fetch_profile", side_effect=fetch
+        ), mock.patch("api.api.time.sleep") as sleeper:
+            api.main(
+                user="prottoy.raha.r",
+                interactive=False,
+                retry_wait=5,
+                retries=1,
+            )
+        sleeper.assert_called_once_with(120)
+
+    def test_no_retry_by_default(self):
+        with mock.patch.object(
+            api.main, "_fetch_profile", side_effect=api.RateLimitedError("limited")
+        ), mock.patch("api.api.time.sleep") as sleeper:
+            with self.assertRaises(api.RateLimitedError):
+                api.main(user="prottoy.raha.r", interactive=False)
+        sleeper.assert_not_called()
+
+
 class CookieAndHostTests(BaseTestCase):
     def test_parse_cookie_input_formats(self):
         cases = {
@@ -538,7 +663,7 @@ class CookieAndHostTests(BaseTestCase):
             ig = self.make(
                 sessionid="sessionid=sess1; csrftoken=csrf1; ds_user_id=99"
             )
-            cookies = {c.name: c.value for c in ig.session.cookies}
+            cookies = ig.session.cookies.get_dict()
         self.assertEqual(ig.sessionid, "sess1")
         self.assertEqual(cookies["csrftoken"], "csrf1")
         self.assertEqual(cookies["ds_user_id"], "99")
@@ -567,7 +692,11 @@ class CookieAndHostTests(BaseTestCase):
 
         with mock.patch.object(api.main, "_get", side_effect=fake_get):
             ig = api.main(user="prottoy.raha.r", interactive=False)
-        web_url, web_headers = seen[1]
+        web_url, web_headers = next(
+            (url, headers)
+            for url, headers in seen
+            if "usernameinfo" in url
+        )
         self.assertTrue(web_url.startswith("https://www.instagram.com/"))
         self.assertEqual(web_headers.get("X-IG-App-ID"), api.IG_APP_ID)
         self.assertEqual(ig.output["followers"], "120")
@@ -695,9 +824,7 @@ class ThrottlingTests(BaseTestCase):
                 return FakeResponse(payload={"items": self.ITEMS})
             if url == api.GRAPHQL_URL:
                 return FakeResponse(status_code=429)
-            if "/api/v1/" in url:
-                return FakeResponse(status_code=429)
-            raise AssertionError(url)
+            return FakeResponse(status_code=429)
 
         with mock.patch.object(api.main, "_get", side_effect=fake_get):
             ig = api.main(user="prottoy.raha.r", interactive=False)

@@ -111,23 +111,49 @@ apart:
   is missing or rejected, and SoIG prompts for one.
 
 To keep working when `web_profile_info` is throttled, SoIG automatically tries
-other sources for the same profile, all on `www.instagram.com` where web cookies
-are accepted:
+other sources for the same profile:
 
 1. `users/web_profile_info/?username=`
-2. `users/<username>/usernameinfo/`
-3. `feed/user/<username>/username/` (falling back to `feed/user/<id>/`)
-4. the profile page's embedded JSON
-5. the same endpoints on `i.instagram.com` with the mobile app's headers
+2. the profile page's embedded JSON (`data-sjs` / `xig_user_by_username`)
+3. the profile page's OpenGraph metadata (works even when Instagram strips the
+   JSON payload; gives name, followers, following, posts and avatar)
+4. `?__a=1&__d=dis` JSON
+5. `users/<username>/usernameinfo/` and `feed/user/<username>/username/`
+   (falling back to `feed/user/<id>/`)
+6. the same endpoints on `i.instagram.com` with the mobile app's headers
 
 It also loads `instagram.com` once per session so requests carry a matching
 `csrftoken`.
 
-If your IP is throttled for a longer period, route SoIG through another
-connection with `IG_PROXY`:
+#### Browser impersonation (recommended)
+
+Instagram strips the embedded JSON payload and rate limits harder for Python
+clients whose TLS fingerprint is not a browser. SoIG uses
+[`curl_cffi`](https://pypi.org/project/curl-cffi/) to impersonate Chrome whenever
+it is installed (it is in `requirements.txt`); disable it with
+`--no-impersonate` if needed. If only the OpenGraph metadata could be read, SoIG
+says so and the bio, posts and tags are unavailable.
+
+```sh
+$ pip install curl_cffi        # or: pip install -r requirements.txt
+```
+
+#### Proxies and retries
+
+Route SoIG through another connection when your IP is throttled:
 
 ```sh
 $ IG_PROXY=http://user:pass@host:port python3 main.py --username <username>
+# or
+$ python3 main.py --username <username> --proxy http://host:port
+```
+
+To wait and retry automatically after a 429 (using Instagram's `Retry-After`
+when present):
+
+```sh
+$ python3 main.py --username <username> --retry-wait 60
+# or: IG_RETRY_WAIT=60 python3 main.py --username <username>
 ```
 
 ## Usage

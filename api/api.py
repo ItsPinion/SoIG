@@ -5,6 +5,7 @@ import getpass
 import json
 import os
 import random
+import re as regex
 import sys
 import time
 import urllib.parse
@@ -12,6 +13,11 @@ import urllib.request
 
 import requests
 from bs4 import BeautifulSoup
+
+try:  # optional: makes requests look like a real Chrome build at the TLS level
+    from curl_cffi import requests as curl_requests
+except ImportError:  # pragma: no cover - exercised only without the extra
+    curl_requests = None
 
 collections.Callable = collections.abc.Callable
 
@@ -211,6 +217,77 @@ def _looks_like_rate_limit(text):
     )
 
 
+_COUNT_RE = r"([\d.,]+\s*[KMB]?)"
+
+
+def _parse_count(value):
+    """Turn '12,345', '1.2M' or '3K' into an int."""
+    text = str(value or "").strip().replace(",", "").replace(" ", "")
+    if not text:
+        return 0
+    multiplier = 1
+    suffix = text[-1].upper()
+    if suffix in "KMB":
+        multiplier = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}[suffix]
+        text = text[:-1]
+    try:
+        number = float(text)
+    except ValueError:
+        return 0
+    return int(number * multiplier)
+
+
+def _meta_content(soup, **attrs):
+    tag = soup.find("meta", attrs=attrs)
+    return (tag.get("content") or "").strip() if tag else ""
+
+
+def _profile_from_html_meta(html, username):
+    """Read name/counts/picture from the page's OpenGraph metadata.
+
+    These tags are rendered for every public profile, including pages where
+    Instagram strips the JSON payload for clients it does not trust.
+    """
+    soup = BeautifulSoup(html or "", "html.parser")
+    title = _meta_content(soup, property="og:title")
+    description = _meta_content(soup, property="og:description") or _meta_content(
+        soup, attrs={"name": "description"}
+    )
+    image = _meta_content(soup, property="og:image")
+    if not description and not title:
+        return None
+
+    match = regex.search(r"\(@([^)\s]+)\)", f"{title} {description}")
+    if not match or match.group(1).casefold() != str(username).casefold():
+        return None
+
+    counts = regex.search(
+        rf"{_COUNT_RE}\s*Followers?,\s*{_COUNT_RE}\s*Following,\s*"
+        rf"{_COUNT_RE}\s*Posts?",
+        description,
+        regex.IGNORECASE,
+    )
+    if not counts:
+        return None
+
+    name = title.split("(@")[0].strip()
+    if not name:
+        name = regex.search(r"from\s+(.+?)\s*\(@", description) or ""
+        name = name.group(1).strip() if hasattr(name, "group") else ""
+
+    return {
+        "username": match.group(1),
+        "full_name": name,
+        "biography": "",
+        "follower_count": _parse_count(counts.group(1)),
+        "following_count": _parse_count(counts.group(2)),
+        "media_count": _parse_count(counts.group(3)),
+        "profile_pic_url": image,
+        "is_private": False,
+        "is_verified": False,
+    }
+
+
 def _json_after_marker(text, marker):
     """Return the first JSON object that follows ``marker`` in ``text``."""
     start = 0
@@ -311,7 +388,16 @@ class extra:
 
 
 class main:
-    def __init__(self, user, sessionid=None, interactive=None):
+    def __init__(
+        self,
+        user,
+        sessionid=None,
+        interactive=None,
+        proxy=None,
+        impersonate=None,
+        retry_wait=0,
+        retries=1,
+    ):
         self.user = user.strip().lstrip("@").rstrip("/")
         self.base_dir = os.getcwd()
         self.tags = {}
@@ -326,13 +412,17 @@ class main:
         self._prompts = 0
         self._feed_items = {}
         self._user_id = None
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": random.choice(useragent),
-                "Accept-Language": "en-US,en;q=0.9",
-            }
-        )
+        self.limited_data = False
+        self._warned_limited = False
+        self.data_source = ""
+        self.retry_wait = retry_wait
+        self.retries = retries
+        self.session = self._new_session(impersonate=impersonate, proxy=proxy)
+        headers = {"Accept-Language": "en-US,en;q=0.9"}
+        if self.impersonating is False:
+            # With impersonation curl_cffi already sends a matching UA.
+            headers["User-Agent"] = random.choice(useragent)
+        self.session.headers.update(headers)
         # Prompts for a sessionid only when running on a real terminal.
         if interactive is None:
             try:
@@ -343,16 +433,32 @@ class main:
         self._provided_cookies = _parse_cookie_input(
             sessionid if sessionid is not None else os.environ.get("IG_SESSIONID", "")
         )
-        proxy = os.environ.get("IG_PROXY", "").strip()
-        if proxy:
-            self.session.proxies.update({"http": proxy, "https": proxy})
         self.get_profile()
+
+    def _new_session(self, impersonate=None, proxy=None):
+        """Build the HTTP session, impersonating Chrome when curl_cffi exists.
+
+        Instagram strips the embedded profile payload and rate limits harder for
+        clients whose TLS fingerprint does not look like a browser, so the
+        impersonating transport is used whenever it is installed.
+        """
+        want_impersonation = True if impersonate is None else bool(impersonate)
+        if want_impersonation and curl_requests is not None:
+            self.impersonating = True
+            session = curl_requests.Session(impersonate="chrome")
+        else:
+            self.impersonating = False
+            session = requests.Session()
+        proxy = (proxy if proxy is not None else os.environ.get("IG_PROXY", "")).strip()
+        if proxy:
+            session.proxies.update({"http": proxy, "https": proxy})
+        return session
 
     def _get(self, url, **kwargs):
         kwargs.setdefault("timeout", REQUEST_TIMEOUT)
         try:
             return self.session.get(url, **kwargs)
-        except requests.RequestException as exc:
+        except Exception as exc:  # transport errors differ per backend
             raise InstagramError(f"could not reach {url}: {exc}") from exc
 
     def _set_cookies(self, cookies):
@@ -522,6 +628,7 @@ class main:
 
     def _fetch_profile_with_login(self):
         """Fetch the profile, asking for a sessionid when Instagram demands one."""
+        attempt = 0
         while True:
             try:
                 return self._fetch_profile()
@@ -531,6 +638,16 @@ class main:
                     # throttling or refusing this IP, not the session.
                     raise InstagramError(str(exc)) from None
                 self._prompt_for_sessionid(exc)
+            except RateLimitedError as exc:
+                if not self.retry_wait or attempt >= self.retries:
+                    raise
+                attempt += 1
+                wait = exc.retry_after or self.retry_wait
+                print(
+                    f"\n{re}[!]{nu} rate limited; retrying in {wait}s "
+                    f"({attempt}/{self.retries}) ..."
+                )
+                time.sleep(wait)
 
     def _prompt_for_sessionid(self, error):
         """Ask for a sessionid until it is accepted; raise ``error`` to cancel."""
@@ -625,6 +742,7 @@ class main:
         if not isinstance(user, dict):
             user = _find_user_payload(payload, self.user)
         if isinstance(user, dict):
+            self.data_source = source
             return user
 
         message = payload.get("message") if isinstance(payload, dict) else None
@@ -649,6 +767,25 @@ class main:
             mobile=True,
         )
 
+    def _fetch_from_page_json(self):
+        """Ask the profile URL for JSON directly (works for some sessions)."""
+        response = self._get(
+            PROFILE_URL.format(username=self.user),
+            params={"__a": "1", "__d": "dis"},
+            headers=self._api_headers(),
+        )
+        self._check_status(response, "profile JSON")
+        try:
+            payload = response.json()
+        except ValueError:
+            raise InstagramError("the profile JSON endpoint returned no JSON") from None
+        user = _find_user_payload(payload, self.user)
+        if not isinstance(user, dict):
+            message = payload.get("message") if isinstance(payload, dict) else None
+            raise InstagramError(message or "the profile JSON had no profile")
+        self.data_source = "profile JSON endpoint"
+        return user
+
     def _fetch_from_username_info(self):
         return self._json_user(
             WWW_USERNAME_INFO_URL.format(username=self.user), "username lookup API"
@@ -669,7 +806,10 @@ class main:
             if value:
                 self._user_id = str(value)
                 return self._user_id
-        lookups = (self._fetch_from_username_info, self._fetch_from_mobile_username_info)
+        lookups = (
+            self._fetch_from_username_info,
+            self._fetch_from_mobile_username_info,
+        )
         for fetch in lookups:
             try:
                 user = fetch()
@@ -704,11 +844,17 @@ class main:
 
     def _fetch_from_feed(self):
         """Rebuild the profile from the website's user feed."""
-        return self._profile_from_feed(self._www_feed_items(), "user feed")
+        profile = self._profile_from_feed(self._www_feed_items(), "user feed")
+        self.data_source = "user feed"
+        return profile
 
     def _fetch_from_mobile_feed(self):
         """Rebuild the profile from the mobile app's user feed."""
-        return self._profile_from_feed(self._mobile_feed_items(), "mobile user feed")
+        profile = self._profile_from_feed(
+            self._mobile_feed_items(), "mobile user feed"
+        )
+        self.data_source = "mobile user feed"
+        return profile
 
     def _request_feed_items(self, url, source, mobile):
         response = self._get(
@@ -835,31 +981,43 @@ class main:
                     "image/avif,image/webp,*/*;q=0.8"
                 ),
                 "Referer": "https://www.instagram.com/",
+                "Upgrade-Insecure-Requests": "1",
             },
         )
         self._check_status(response, "profile page")
         user = self._find_user_in_html(response.text)
-        if user is None:
-            if _looks_like_rate_limit(response.text):
-                raise RateLimitedError(
-                    "the profile page is rate limiting this IP (HTTP 200 with a "
-                    "'wait a few minutes' page)"
-                )
-            if _looks_like_login(response.text):
-                raise LoginRequiredError(
-                    "the profile page served a login wall instead of profile data"
-                )
-            raise InstagramError(
-                "the profile page did not contain embedded profile data"
+        if user is not None:
+            self.data_source = "profile page"
+            return user
+
+        user = _profile_from_html_meta(response.text, self.user)
+        if user is not None:
+            # Instagram stripped the JSON payload, but the public metadata is
+            # enough for the headline numbers.
+            self.limited_data = True
+            self.data_source = "profile page metadata"
+            return user
+
+        if _looks_like_rate_limit(response.text):
+            raise RateLimitedError(
+                "the profile page is rate limiting this IP (HTTP 200 with a "
+                "'wait a few minutes' page)"
             )
-        return user
+        if _looks_like_login(response.text):
+            raise LoginRequiredError(
+                "the profile page served a login wall instead of profile data"
+            )
+        raise InstagramError(
+            "the profile page did not contain embedded profile data"
+        )
 
     def _profile_sources(self):
         return (
             ("profile API", self._fetch_from_api),
+            ("profile page", self._fetch_from_html),
+            ("profile JSON", self._fetch_from_page_json),
             ("username lookup API", self._fetch_from_username_info),
             ("user feed", self._fetch_from_feed),
-            ("profile page", self._fetch_from_html),
             ("mobile profile API", self._fetch_from_mobile_api),
             ("mobile username lookup API", self._fetch_from_mobile_username_info),
             ("mobile user feed", self._fetch_from_mobile_feed),
@@ -1137,6 +1295,7 @@ class main:
 
     def print_data_(self):
         self._extracted_from_print_data_2()
+        self._warn_limited_data()
         self._warn_posts_error()
         print(f"{gr}[+]{nu} most used user tags : \n")
         for key, value in collections.Counter(self.tags).most_common(5):
@@ -1145,6 +1304,26 @@ class main:
 
     def print_data(self):
         self._extracted_from_print_data_2()
+        self._warn_limited_data()
+
+    def _warn_limited_data(self):
+        if self.limited_data and not self._warned_limited:
+            if self.impersonating:
+                advice = (
+                    "Instagram stripped the full payload even with browser "
+                    "impersonation; try another network or IG_PROXY."
+                )
+            else:
+                advice = (
+                    "Install curl_cffi (pip install curl_cffi) for browser "
+                    "impersonation, or use IG_PROXY, to get the full profile."
+                )
+            print(
+                f"{re}[!]{gr} only the public profile metadata was available "
+                f"({self.data_source}): followers/following/posts are shown, but "
+                f"bio, posts and tags are unavailable. {advice}\n"
+            )
+            self._warned_limited = True
 
     def _warn_posts_error(self):
         if self.posts_error and not self._warned_posts_error:
