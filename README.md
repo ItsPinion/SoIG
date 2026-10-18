@@ -59,21 +59,39 @@ $ python3 main.py --username <username> --postscrap --savedata --tagscrap
 #### If Instagram asks for a login
 
 Instagram only returns profile data to a subset of logged-out requests and often
-answers with a login page instead. If SoIG reports that the profile could not be
-retrieved:
+answers with a login page instead. When that happens SoIG asks for a `sessionid`
+and keeps asking until it gets one that works:
 
-1. Log in to <https://www.instagram.com> in your browser.
-2. Open the developer tools, go to **Application/Storage → Cookies →
-   instagram.com** and copy the value of the `sessionid` cookie.
-3. Export it for the current shell and run the tool again:
+```text
+[!] Instagram is asking for a logged-in session.
+  1. Log in to https://www.instagram.com in your browser.
+  2. Open the developer tools (F12) -> Application -> Storage -> Cookies ->
+     instagram.com and copy the value of the 'sessionid' cookie.
+  3. Paste it below (the value is hidden while you type).
+Press Enter without a value to cancel.
+
+sessionid:
+```
+
+Each value is checked against Instagram before it is used:
+
+- **`[+] sessionid works (logged in as @you)`** - the cookie is valid and the
+  scrape continues.
+- **`[!] that sessionid does not work (...)`** - the cookie was rejected, so it
+  is discarded and you are asked again. Press Enter to give up.
+
+You can also supply it up front; it is validated the same way, and a stale value
+is ignored with a warning:
 
 ```sh
 $ export IG_SESSIONID="<sessionid value>"
 $ python3 main.py --username <username>
 ```
 
-Use your own account, keep the value private and log out / rotate the session
-when you are done. Scraping is still subject to Instagram's rate limits.
+The value is read from the `IG_SESSIONID` environment variable or typed at the
+prompt; it is never written to disk. Use your own account, keep the value
+private and log out / rotate the session when you are done. Scraping is still
+subject to Instagram's rate limits.
 
 ## Usage
 

@@ -1,6 +1,7 @@
 #!/bin/env python3
 
 import collections
+import getpass
 import json
 import os
 import random
@@ -34,16 +35,31 @@ GRAPHQL_URL = "https://www.instagram.com/graphql/query/"
 IG_APP_ID = "936619743392459"
 FEED_DOC_ID = "9310670392322965"
 FEED_PAGE_SIZE = 12
+SESSION_CHECK_URL = "https://www.instagram.com/api/v1/accounts/edit/web_form_data/"
+SESSION_CHECK_USERNAME = "instagram"
 
 LOGIN_HINT = (
-    "Instagram refuses many logged-out requests. Open instagram.com in a browser "
-    "where you are logged in, copy the value of the 'sessionid' cookie and export it "
-    "as IG_SESSIONID, then run the tool again."
+    "Instagram requires a logged-in session for this request. Log in to "
+    "instagram.com in your browser, copy the value of the 'sessionid' cookie and "
+    "paste it when prompted (or export it as IG_SESSIONID), then run the tool again."
+)
+
+LOGIN_HELP = (
+    "Instagram is asking for a logged-in session.\n"
+    "  1. Log in to https://www.instagram.com in your browser.\n"
+    "  2. Open the developer tools (F12) -> Application -> Storage -> Cookies ->\n"
+    "     instagram.com and copy the value of the 'sessionid' cookie.\n"
+    "  3. Paste it below (the value is hidden while you type).\n"
+    "Press Enter without a value to cancel."
 )
 
 
 class InstagramError(Exception):
     """Raised when Instagram does not return usable profile data."""
+
+
+class LoginRequiredError(InstagramError):
+    """Raised when Instagram asks for an authenticated session."""
 
 
 def _dig(data, *keys, default=None):
@@ -69,6 +85,45 @@ def _as_bool(value):
     if isinstance(value, str):
         return value.strip().lower() == "true"
     return bool(value)
+
+
+def _clean_sessionid(value):
+    """Normalise a pasted sessionid.
+
+    Accepts a bare value, ``sessionid=...`` or a whole pasted cookie header
+    such as ``sessionid=abc; ds_user_id=123``.
+    """
+    value = (value or "").strip().strip('"').strip("'")
+    if ";" in value:
+        for part in value.split(";"):
+            name, separator, cookie_value = part.strip().partition("=")
+            if separator and name.strip().lower() == "sessionid":
+                value = cookie_value
+                break
+    if value.lower().startswith("sessionid="):
+        value = value.split("=", 1)[1]
+    return value.strip().strip('"').strip("'")
+
+
+def _response_message(response):
+    """Best-effort extraction of Instagram's error message from a response."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if isinstance(payload, dict):
+        return payload.get("message")
+    return None
+
+
+def _looks_like_login(text):
+    """True when the response looks like Instagram's login wall."""
+    compact = "".join((text or "")[:500_000].lower().split())
+    return (
+        '"require_login":true' in compact
+        or "<title>login" in compact
+        or 'id="loginform"' in compact
+    )
 
 
 def _json_after_marker(text, marker):
@@ -156,7 +211,7 @@ class extra:
 
 
 class main:
-    def __init__(self, user):
+    def __init__(self, user, sessionid=None, interactive=None):
         self.user = user.strip().lstrip("@").rstrip("/")
         self.base_dir = os.getcwd()
         self.tags = {}
@@ -166,6 +221,7 @@ class main:
         self.p_data = {}
         self.profile_pic_url = ""
         self.is_private = False
+        self.sessionid = ""
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -173,9 +229,16 @@ class main:
                 "Accept-Language": "en-US,en;q=0.9",
             }
         )
-        sessionid = os.environ.get("IG_SESSIONID", "").strip()
-        if sessionid:
-            self.session.cookies.set("sessionid", sessionid, domain=".instagram.com")
+        # Prompts for a sessionid only when running on a real terminal.
+        if interactive is None:
+            try:
+                interactive = sys.stdin.isatty()
+            except (AttributeError, ValueError):
+                interactive = False
+        self.interactive = bool(interactive)
+        self._provided_sessionid = _clean_sessionid(
+            sessionid if sessionid is not None else os.environ.get("IG_SESSIONID", "")
+        )
         self.get_profile()
 
     def _get(self, url, **kwargs):
@@ -184,6 +247,151 @@ class main:
             return self.session.get(url, **kwargs)
         except requests.RequestException as exc:
             raise InstagramError(f"could not reach {url}: {exc}") from exc
+
+    def _set_sessionid(self, sessionid):
+        """Attach (or clear) the sessionid cookie used for every request."""
+        self.sessionid = sessionid or ""
+        if self.sessionid:
+            self.session.cookies.set(
+                "sessionid", self.sessionid, domain=".instagram.com"
+            )
+        else:
+            self.session.cookies.clear()
+
+    def _session_headers(self, reference_username=None):
+        username = reference_username or self.user
+        return {
+            "Accept": "*/*",
+            "Referer": PROFILE_URL.format(username=username),
+            "X-IG-App-ID": IG_APP_ID,
+            "X-Requested-With": "XMLHttpRequest",
+        }
+
+    def _session_status(self):
+        """Check whether the current sessionid is accepted by Instagram.
+
+        Returns a ``(status, detail)`` tuple where status is ``"valid"``,
+        ``"invalid"`` or ``"unknown"`` (could not be determined).
+        """
+        try:
+            response = self._get(SESSION_CHECK_URL, headers=self._session_headers())
+        except InstagramError as exc:
+            return "unknown", str(exc)
+
+        if response.status_code in (401, 403) or "/accounts/login" in response.url:
+            return "invalid", f"HTTP {response.status_code}"
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                form = payload.get("form_data")
+                if isinstance(form, dict):
+                    username = form.get("username")
+                    if username:
+                        return "valid", f" (logged in as @{username})"
+                    return "valid", ""
+                if payload.get("require_login"):
+                    return "invalid", payload.get("message") or "login required"
+                if payload.get("status") == "fail":
+                    return "invalid", payload.get("message") or "session rejected"
+            if _looks_like_login(response.text):
+                return "invalid", "Instagram served a login page"
+        return self._session_status_from_profile()
+
+    def _session_status_from_profile(self):
+        """Second opinion: can we read a known public profile with this session?"""
+        try:
+            response = self._get(
+                WEB_PROFILE_INFO_URL,
+                params={"username": SESSION_CHECK_USERNAME},
+                headers=self._session_headers(SESSION_CHECK_USERNAME),
+            )
+        except InstagramError as exc:
+            return "unknown", str(exc)
+
+        if response.status_code in (401, 403) or "/accounts/login" in response.url:
+            return "invalid", f"HTTP {response.status_code}"
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+            except ValueError:
+                return "unknown", "Instagram returned an unexpected response"
+            if _dig(payload, "data", "user"):
+                return "valid", ""
+            message = payload.get("message") if isinstance(payload, dict) else None
+            if isinstance(payload, dict) and payload.get("require_login"):
+                return "invalid", message or "login required"
+            return "unknown", message or "unexpected response"
+        return "unknown", f"HTTP {response.status_code}"
+
+    def _use_provided_sessionid(self):
+        """Validate a sessionid passed as an argument or via IG_SESSIONID."""
+        if not self._provided_sessionid:
+            return
+        self._set_sessionid(self._provided_sessionid)
+        status, detail = self._session_status()
+        if status == "valid":
+            print(f"\n{gr}[+]{nu} sessionid works{detail}")
+            return
+        print()
+        if status == "invalid":
+            print(
+                f"{re}[!]{gr} the provided sessionid does not work ({detail}); "
+                "ignoring it."
+            )
+            self._set_sessionid(None)
+        else:
+            print(
+                f"{re}[!]{gr} could not verify the provided sessionid ({detail}); "
+                "trying it anyway."
+            )
+        print()
+
+    def _fetch_profile_with_login(self):
+        """Fetch the profile, asking for a sessionid when Instagram demands one."""
+        while True:
+            try:
+                return self._fetch_profile()
+            except LoginRequiredError as exc:
+                self._prompt_for_sessionid(exc)
+
+    def _prompt_for_sessionid(self, error):
+        """Ask for a sessionid until it is accepted; raise ``error`` to cancel."""
+        if not self.interactive:
+            raise error
+
+        print()
+        print(f"{re}[!]{gr} {LOGIN_HELP}\n")
+        while True:
+            try:
+                value = getpass.getpass(f"{gr}sessionid{nu}: ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                raise error from None
+
+            value = _clean_sessionid(value)
+            if not value:
+                raise error from None
+
+            self._set_sessionid(value)
+            status, detail = self._session_status()
+            if status == "valid":
+                print(f"{gr}[+]{nu} sessionid works{detail}\n")
+                return
+            if status == "unknown":
+                print(
+                    f"{re}[!]{gr} could not verify the sessionid ({detail}); "
+                    "trying it anyway.\n"
+                )
+                return
+
+            print(
+                f"{re}[!]{gr} that sessionid does not work ({detail}). "
+                "Please try again, or press Enter to cancel.\n"
+            )
+            self._set_sessionid(None)
 
     @staticmethod
     def _check_status(response, source):
@@ -194,9 +402,14 @@ class main:
                 f"the {source} is rate limiting this IP (HTTP 429); wait a while and try again"
             )
         if response.status_code in (401, 403) or "/accounts/login" in response.url:
-            raise InstagramError(
-                f"the {source} requires a logged-in session (HTTP {response.status_code})"
+            raise LoginRequiredError(
+                f"the {source} requires a logged-in session "
+                f"(HTTP {response.status_code})"
             )
+        if response.status_code == 400:
+            message = _response_message(response) or ""
+            if "log" in message.lower():
+                raise LoginRequiredError(f"the {source} says: {message}")
         if response.status_code >= 400:
             raise InstagramError(f"the {source} returned HTTP {response.status_code}")
 
@@ -216,11 +429,19 @@ class main:
         try:
             payload = response.json()
         except ValueError:
+            if _looks_like_login(response.text):
+                raise LoginRequiredError(
+                    "the profile API served a login wall instead of JSON"
+                ) from None
             raise InstagramError("the profile API returned non-JSON data") from None
 
         user = _dig(payload, "data", "user")
         if not isinstance(user, dict):
             message = payload.get("message") if isinstance(payload, dict) else None
+            if isinstance(payload, dict) and (
+                payload.get("require_login") or "log" in str(message or "").lower()
+            ):
+                raise LoginRequiredError(message or "the profile API requires a login")
             raise InstagramError(message or "the profile API returned no user object")
         return user
 
@@ -232,7 +453,11 @@ class main:
                 continue
             for marker in ("window._sharedData", "window.__additionalDataLoaded"):
                 payload = _json_after_marker(text, marker)
-                user = _find_user_payload(payload, self.user) if payload is not None else None
+                user = (
+                    _find_user_payload(payload, self.user)
+                    if payload is not None
+                    else None
+                )
                 if user is not None:
                     return user
             if script.get("type") in ("application/json", "application/ld+json"):
@@ -277,6 +502,10 @@ class main:
         self._check_status(response, "profile page")
         user = self._find_user_in_html(response.text)
         if user is None:
+            if _looks_like_login(response.text):
+                raise LoginRequiredError(
+                    "the profile page served a login wall instead of profile data"
+                )
             raise InstagramError(
                 "the profile page did not contain embedded profile data "
                 "(Instagram hides it from logged-out visitors)"
@@ -285,12 +514,17 @@ class main:
 
     def _fetch_profile(self):
         problems = []
+        login_required = False
         for label, fetch in (
             ("profile API", self._fetch_from_api),
             ("profile page", self._fetch_from_html),
         ):
             try:
                 user = fetch()
+            except LoginRequiredError as exc:
+                login_required = True
+                problems.append(f"{label}: {exc}")
+                continue
             except InstagramError as exc:
                 problems.append(f"{label}: {exc}")
                 continue
@@ -299,14 +533,18 @@ class main:
             problems.append(f"{label}: no profile data returned")
 
         details = "\n    ".join(problems)
-        raise InstagramError(
+        message = (
             f"could not retrieve profile data for '{self.user}'.\n    "
             f"{details}\n    {LOGIN_HINT}"
         )
+        if login_required:
+            raise LoginRequiredError(message)
+        raise InstagramError(message)
 
     def get_profile(self):
         extra.write(f"\n{gr}[+]{nu} getting profile ...")
-        self.p_data = self._fetch_profile()
+        self._use_provided_sessionid()
+        self.p_data = self._fetch_profile_with_login()
         self.is_private = _as_bool(self.p_data.get("is_private"))
         self.profile_pic_url = (
             self.p_data.get("profile_pic_url_hd")

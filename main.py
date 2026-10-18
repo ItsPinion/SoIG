@@ -23,6 +23,9 @@ try:
 except InstagramError as exc:
     print(f"\n{re}[!]{nu} {exc}\n")
     sys.exit(1)
+except KeyboardInterrupt:
+    print(f"\n{re}[!]{nu} cancelled\n")
+    sys.exit(1)
 
 if args['tagscrap']:
     ig.print_data()

@@ -86,6 +86,7 @@ class BaseTestCase(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def make(self, user=USER, feed=None, **kwargs):
+        kwargs.setdefault("interactive", False)
         with mock.patch.object(
             api.main, "_fetch_profile", return_value=dict(user)
         ), mock.patch.object(api.main, "_fetch_feed", return_value=feed or []):
@@ -259,7 +260,9 @@ class FetchTests(BaseTestCase):
     def test_api_success(self):
         response = FakeResponse(payload={"data": {"user": USER}})
         with mock.patch.object(api.main, "_get", return_value=response):
-            self.assertEqual(self.make()._fetch_from_api()["username"], USER["username"])
+            self.assertEqual(
+                self.make()._fetch_from_api()["username"], USER["username"]
+            )
 
     def test_api_404(self):
         with mock.patch.object(
@@ -344,10 +347,165 @@ class FetchTests(BaseTestCase):
                 api.main(user="prottoy.raha.r")
 
     def test_session_id_from_environment(self):
-        with mock.patch.dict(os.environ, {"IG_SESSIONID": "abc123"}):
+        with mock.patch.dict(os.environ, {"IG_SESSIONID": "abc123"}), mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ):
             ig = self.make()
         cookies = {c.name: c.value for c in ig.session.cookies}
         self.assertEqual(cookies.get("sessionid"), "abc123")
+
+
+class LoginPromptTests(BaseTestCase):
+    def test_401_raises_login_required(self):
+        with mock.patch.object(
+            api.main, "_get", return_value=FakeResponse(status_code=401)
+        ):
+            with self.assertRaises(api.LoginRequiredError):
+                self.make()._fetch_from_api()
+
+    def test_400_logged_in_message_raises_login_required(self):
+        response = FakeResponse(
+            status_code=400,
+            payload={"message": "Make sure you are logged in", "status": "fail"},
+        )
+        with mock.patch.object(api.main, "_get", return_value=response):
+            with self.assertRaises(api.LoginRequiredError):
+                self.make()._fetch_from_api()
+
+    def test_html_login_wall_raises_login_required(self):
+        html = "<html><title>Login - Instagram</title></html>"
+        with mock.patch.object(api.main, "_get", return_value=FakeResponse(text=html)):
+            with self.assertRaises(api.LoginRequiredError):
+                self.make()._fetch_from_html()
+
+    def test_prompts_and_retries_until_session_works(self):
+        fetches = []
+
+        def fetch():
+            fetches.append(1)
+            if len(fetches) == 1:
+                raise api.LoginRequiredError("login")
+            return dict(USER)
+
+        statuses = iter(
+            [("invalid", "HTTP 401"), ("valid", " (logged in as @demo)")]
+        )
+        with mock.patch.object(
+            api.main, "_fetch_profile", side_effect=fetch
+        ), mock.patch.object(
+            api.main, "_session_status", side_effect=lambda: next(statuses)
+        ), mock.patch("api.api.getpass.getpass", side_effect=["wrong", "right"]):
+            ig = api.main(user="prottoy.raha.r", interactive=True)
+
+        self.assertEqual(ig.output["followers"], "120")
+        self.assertEqual(ig.sessionid, "right")
+        self.assertEqual(len(fetches), 2)
+
+    def test_prompt_is_not_used_when_not_interactive(self):
+        with mock.patch.object(
+            api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
+        ), mock.patch("api.api.getpass.getpass") as getpass_mock:
+            with self.assertRaises(api.LoginRequiredError):
+                api.main(user="prottoy.raha.r", interactive=False)
+        getpass_mock.assert_not_called()
+
+    def test_empty_input_cancels(self):
+        with mock.patch.object(
+            api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
+        ), mock.patch(
+            "api.api.getpass.getpass", side_effect=["   "]
+        ), mock.patch.object(
+            api.main, "_session_status"
+        ) as status:
+            with self.assertRaises(api.LoginRequiredError):
+                api.main(user="prottoy.raha.r", interactive=True)
+        status.assert_not_called()
+
+    def test_ctrl_c_cancels(self):
+        with mock.patch.object(
+            api.main, "_fetch_profile", side_effect=api.LoginRequiredError("login")
+        ), mock.patch(
+            "api.api.getpass.getpass", side_effect=KeyboardInterrupt
+        ):
+            with self.assertRaises(api.LoginRequiredError):
+                api.main(user="prottoy.raha.r", interactive=True)
+
+    def test_unverifiable_session_is_retried_anyway(self):
+        fetches = []
+
+        def fetch():
+            fetches.append(1)
+            if len(fetches) == 1:
+                raise api.LoginRequiredError("login")
+            return dict(USER)
+
+        with mock.patch.object(
+            api.main, "_fetch_profile", side_effect=fetch
+        ), mock.patch.object(
+            api.main, "_session_status", return_value=("unknown", "timed out")
+        ), mock.patch("api.api.getpass.getpass", side_effect=["maybe"]):
+            ig = api.main(user="prottoy.raha.r", interactive=True)
+        self.assertEqual(ig.output["followers"], "120")
+        self.assertEqual(len(fetches), 2)
+
+    def test_invalid_provided_session_is_dropped(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("invalid", "HTTP 401")
+        ):
+            ig = self.make(sessionid="stale")
+        self.assertEqual(ig.sessionid, "")
+        self.assertEqual({c.name for c in ig.session.cookies}, set())
+
+    def test_cookie_header_paste_is_understood(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ):
+            ig = self.make(sessionid="csrftoken=x; sessionid=abc123; ds_user_id=9")
+        self.assertEqual(ig.sessionid, "abc123")
+
+    def test_valid_provided_session_is_kept(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", " (logged in as @me)")
+        ):
+            ig = self.make(sessionid='"sessionid=fresh"')
+        self.assertEqual(ig.sessionid, "fresh")
+        cookies = {c.name: c.value for c in ig.session.cookies}
+        self.assertEqual(cookies.get("sessionid"), "fresh")
+
+    def test_session_status_valid_from_web_form_data(self):
+        response = FakeResponse(payload={"form_data": {"username": "me"}})
+        with mock.patch.object(api.main, "_get", return_value=response):
+            self.assertEqual(
+                self.make()._session_status(), ("valid", " (logged in as @me)")
+            )
+
+    def test_session_status_invalid_on_401(self):
+        with mock.patch.object(
+            api.main, "_get", return_value=FakeResponse(status_code=401)
+        ):
+            self.assertEqual(self.make()._session_status()[0], "invalid")
+
+    def test_session_status_invalid_on_login_page(self):
+        response = FakeResponse(text="<html><title>Login - Instagram</title></html>")
+        with mock.patch.object(api.main, "_get", return_value=response):
+            self.assertEqual(self.make()._session_status()[0], "invalid")
+
+    def test_session_status_unknown_when_unreachable(self):
+        with mock.patch.object(
+            api.main, "_get", side_effect=api.InstagramError("no network")
+        ):
+            self.assertEqual(
+                self.make()._session_status(), ("unknown", "no network")
+            )
+
+    def test_session_status_falls_back_to_profile_check(self):
+        def fake_get(url, **kwargs):
+            if url == api.SESSION_CHECK_URL:
+                return FakeResponse(status_code=404, text="not found")
+            return FakeResponse(payload={"data": {"user": USER}})
+
+        with mock.patch.object(api.main, "_get", side_effect=fake_get):
+            self.assertEqual(self.make()._session_status(), ("valid", ""))
 
 
 if __name__ == "__main__":
