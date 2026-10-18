@@ -127,3 +127,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# SoIG session file (never commit Instagram cookies)
+session.json
+.soig_session.json

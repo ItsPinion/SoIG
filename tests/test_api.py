@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+import pathlib
 import sys
 import tempfile
 import unittest
@@ -82,6 +83,13 @@ class BaseTestCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(self.tmp.name)
+        env = {
+            "IG_SESSION_FILE": os.path.join(self.tmp.name, "session.json"),
+        }
+        env_patch = mock.patch.dict(os.environ, env)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        os.environ.pop("IG_SESSIONID", None)
         for name, value in (
             ("tiny_url", mock.Mock(side_effect=lambda url: url)),
             ("write", mock.Mock()),
@@ -399,7 +407,9 @@ class LoginPromptTests(BaseTestCase):
             api.main, "_fetch_profile", side_effect=fetch
         ), mock.patch.object(
             api.main, "_session_status", side_effect=lambda: next(statuses)
-        ), mock.patch("api.api._read_prompt", side_effect=["wrong", "right"]):
+        ), mock.patch(
+            "api.api._read_prompt", side_effect=["wrong", "right", ""]
+        ):
             ig = api.main(user="prottoy.raha.r", interactive=True)
 
         self.assertEqual(ig.output["followers"], "120")
@@ -448,7 +458,7 @@ class LoginPromptTests(BaseTestCase):
             api.main, "_fetch_profile", side_effect=fetch
         ), mock.patch.object(
             api.main, "_session_status", return_value=("unknown", "timed out")
-        ), mock.patch("api.api._read_prompt", side_effect=["maybe"]):
+        ), mock.patch("api.api._read_prompt", side_effect=["maybe", ""]):
             ig = api.main(user="prottoy.raha.r", interactive=True)
         self.assertEqual(ig.output["followers"], "120")
         self.assertEqual(len(fetches), 2)
@@ -522,6 +532,91 @@ META_HTML = (
     '<meta property="og:image" content="https://cdn.example/avatar.jpg" />'
     "</head><body></body></html>"
 )
+
+
+class SavedSessionTests(BaseTestCase):
+    def path(self):
+        return os.environ["IG_SESSION_FILE"]
+
+    def test_saved_session_is_reused_without_prompting(self):
+        api.save_session({"sessionid": "saved", "csrftoken": "c"}, self.path())
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", " (as @me)")
+        ), mock.patch("api.api._read_prompt") as prompter:
+            ig = self.make()
+        prompter.assert_not_called()
+        self.assertEqual(ig.sessionid, "saved")
+        self.assertTrue(ig._session_verified)
+
+    def test_expired_saved_session_prompts_and_saves_again(self):
+        api.save_session({"sessionid": "old", "csrftoken": "c"}, self.path())
+        statuses = iter([("invalid", "HTTP 401"), ("valid", "")])
+        with mock.patch.object(
+            api.main, "_session_status", side_effect=lambda: next(statuses)
+        ), mock.patch(
+            "api.api._read_prompt", side_effect=["sessionid=fresh", "newcsrf"]
+        ) as prompter:
+            ig = self.make(interactive=True)
+        self.assertEqual(ig.sessionid, "fresh")
+        stored = api.load_session(self.path())
+        self.assertEqual(stored["sessionid"], "fresh")
+        self.assertEqual(stored["csrftoken"], "newcsrf")
+        self.assertEqual(prompter.call_count, 2)
+
+    def test_prompt_saves_sessionid_and_csrftoken(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ), mock.patch("api.api._read_prompt", side_effect=["sid-value", "csrf-value"]):
+            self.make(interactive=True, login=True)
+        stored = api.load_session(self.path())
+        self.assertEqual(stored["sessionid"], "sid-value")
+        self.assertEqual(stored["csrftoken"], "csrf-value")
+        mode = os.stat(self.path()).st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+    def test_no_save_flag_keeps_disk_clean(self):
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ), mock.patch("api.api._read_prompt", side_effect=["sid", ""]):
+            self.make(interactive=True, save_cookies=False)
+        self.assertEqual(api.load_session(self.path()), {})
+
+    def test_explicit_cookies_override_the_saved_session(self):
+        api.save_session({"sessionid": "stored"}, self.path())
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ):
+            ig = self.make(sessionid="sessionid=explicit")
+        self.assertEqual(ig.sessionid, "explicit")
+        self.assertEqual(api.load_session(self.path())["sessionid"], "explicit")
+
+    def test_corrupt_file_is_ignored(self):
+        with open(self.path(), "w") as handle:
+            handle.write("{not json")
+        with mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ), mock.patch("api.api._read_prompt", side_effect=["fresh", ""]):
+            ig = self.make(interactive=True, login=True)
+        self.assertEqual(ig.sessionid, "fresh")
+
+    def test_forget_session_removes_the_file(self):
+        api.save_session({"sessionid": "saved"}, self.path())
+        removed = api.forget_session(self.path())
+        self.assertEqual(removed, pathlib.Path(self.path()))
+        self.assertFalse(os.path.exists(self.path()))
+        self.assertIsNone(api.forget_session(self.path()))
+
+    def test_session_file_path_override(self):
+        with mock.patch.dict(os.environ, {"IG_SESSION_FILE": "/tmp/custom.json"}):
+            self.assertEqual(str(api.session_file_path()), "/tmp/custom.json")
+
+    def test_session_file_path_defaults_under_config(self):
+        env = {k: v for k, v in os.environ.items() if k != "IG_SESSION_FILE"}
+        env["XDG_CONFIG_HOME"] = "/tmp/xdg"
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(
+                str(api.session_file_path()), "/tmp/xdg/SoIG/session.json"
+            )
 
 
 class SessionNoticeTests(BaseTestCase):
@@ -616,7 +711,7 @@ class UpgradeTests(BaseTestCase):
         ), mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
         ), mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=good"]
+            "api.api._read_prompt", side_effect=["sessionid=good", ""]
         ):
             ig = api.main(user="_thessb17_", interactive=True)
         self.assertFalse(ig.limited_data)
@@ -633,11 +728,12 @@ class UpgradeTests(BaseTestCase):
         with mock.patch.object(
             api.main, "_session_status", return_value=("valid", "")
         ), mock.patch(
-            "api.api._read_prompt", side_effect=["sessionid=good"]
+            "api.api._read_prompt", side_effect=["sessionid=good", "csrf"]
         ) as prompter:
             ig = self.make(login=True, interactive=True)
-        prompter.assert_called_once()
+        self.assertEqual(prompter.call_count, 2)  # sessionid + csrftoken
         self.assertTrue(ig._session_verified)
+        self.assertEqual(ig.session.cookies.get_dict().get("csrftoken"), "csrf")
 
 
 class MetadataFallbackTests(BaseTestCase):
@@ -755,6 +851,26 @@ class MetadataFallbackTests(BaseTestCase):
                 retries=1,
             )
         sleeper.assert_called_once_with(120)
+
+    def test_429_without_session_offers_a_prompt(self):
+        calls = []
+
+        def fetch():
+            calls.append(1)
+            if len(calls) == 1:
+                raise api.RateLimitedError("limited")
+            return dict(USER)
+
+        with mock.patch.object(
+            api.main, "_fetch_profile", side_effect=fetch
+        ), mock.patch.object(
+            api.main, "_session_status", return_value=("valid", "")
+        ), mock.patch(
+            "api.api._read_prompt", side_effect=["sessionid=good", ""]
+        ) as prompter:
+            ig = api.main(user="prottoy.raha.r", interactive=True)
+        self.assertEqual(prompter.call_count, 2)
+        self.assertEqual(ig.sessionid, "good")
 
     def test_no_retry_by_default(self):
         with mock.patch.object(
@@ -1003,11 +1119,12 @@ class ThrottlingTests(BaseTestCase):
         ), mock.patch.object(
             api.main, "_session_status", return_value=("unknown", "no network")
         ), mock.patch(
-            "api.api._read_prompt", side_effect=answers
+            "api.api._read_prompt", side_effect=["a", "", "b", "", "c", "", "d", ""]
         ) as prompter:
             with self.assertRaises(api.InstagramError):
                 api.main(user="prottoy.raha.r", interactive=True)
-        self.assertLessEqual(prompter.call_count, 4)
+        # three sessionid attempts (plus the csrftoken asks) at most
+        self.assertLessEqual(prompter.call_count, 8)
 
     def test_warm_up_receives_csrf_and_sends_it(self):
         calls = []

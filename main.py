@@ -4,7 +4,14 @@ import argparse
 import os
 import sys
 
-from api.api import InstagramError, main, nu, re
+from api.api import (
+    InstagramError,
+    forget_session,
+    main,
+    nu,
+    re,
+    session_file_path,
+)
 
 ap = argparse.ArgumentParser()
 ap.add_argument("-u", "--username", required=True,
@@ -26,7 +33,22 @@ ap.add_argument("--login", action="store_true",
                 help="ask for an Instagram sessionid before scraping")
 ap.add_argument("--debug", action="store_true",
                 help="show which profile sources were tried and why they failed")
+ap.add_argument("--session-file", default=None, metavar="PATH",
+                help="where to save the session cookies "
+                     "(default: ~/.config/SoIG/session.json, or set IG_SESSION_FILE)")
+ap.add_argument("--no-save-session", action="store_true",
+                help="do not save the sessionid/csrftoken to disk")
+ap.add_argument("--forget-session", action="store_true",
+                help="delete the saved sessionid/csrftoken and exit")
 args = vars(ap.parse_args())
+
+if args["forget_session"]:
+    removed = forget_session(args["session_file"])
+    if removed:
+        print(f"{re}[!]{nu} removed the saved session: {removed}")
+    else:
+        print(f"{re}[!]{nu} no saved session at {args['session_file'] or session_file_path()}")
+    sys.exit(0)
 
 os.system('clear') if os.name == 'posix' else os.system('cls')
 retry_wait = args["retry_wait"] or int(os.environ.get("IG_RETRY_WAIT", "0") or 0)
@@ -38,6 +60,8 @@ try:
         retry_wait=retry_wait,
         login=args["login"],
         debug=args["debug"],
+        save_cookies=not args["no_save_session"],
+        session_file=args["session_file"],
     )
 except InstagramError as exc:
     print(f"\n{re}[!]{nu} {exc}\n")

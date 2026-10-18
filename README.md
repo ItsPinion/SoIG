@@ -143,6 +143,45 @@ The prompt works in a normal terminal (input hidden) and also when input is
 piped or comes from an IDE run pane (input visible). If no input is available at
 all, SoIG prints the `IG_SESSIONID=...` command to use instead.
 
+#### Saved sessions
+
+Instead of pasting one long string, SoIG asks for the two values it needs:
+
+```text
+sessionid: …
+csrftoken (optional, press Enter to fetch it automatically): …
+[+] sessionid works (logged in as @you)
+[+] saved session to /home/you/.config/SoIG/session.json
+```
+
+Both cookies are stored as JSON with owner-only permissions (`0600`, folder
+`0700`) and reused automatically on later runs:
+
+```text
+[+] using the saved session (logged in as @you) (/home/you/.config/SoIG/session.json)
+```
+
+When Instagram stops accepting them, SoIG says so and asks again, replacing the
+file:
+
+```text
+[!] the saved session in …/session.json has expired (HTTP 401).
+    Please log in again.
+```
+
+Manage it with:
+
+```sh
+$ python3 main.py --username <username> --forget-session   # delete saved cookies
+$ python3 main.py --username <username> --no-save-session  # do not write them
+$ python3 main.py --username <username> --session-file ~/ig.json
+```
+
+`IG_SESSION_FILE` overrides the location. Pasting a full `Cookie` header still
+works, and explicit `IG_SESSIONID=<cookies>` takes priority over the saved file.
+The file is plain text: keep it private and run `--forget-session` when you are
+done.
+
 #### Browser impersonation (recommended)
 
 Instagram strips the embedded JSON payload and rate limits harder for Python
@@ -192,6 +231,9 @@ A simple workflow of command used to run SoIG with a Description.
 | `--retry-wait SECONDS`                | wait and retry once after a 429 (or set `IG_RETRY_WAIT`).    |
 | `--no-impersonate`                    | disable browser TLS impersonation (`curl_cffi`).             |
 | `--debug`                             | show each profile source that was tried and why it failed.   |
+| `--session-file PATH`                 | where saved cookies live (or set `IG_SESSION_FILE`).         |
+| `--no-save-session`                   | do not save the sessionid/csrftoken to disk.                 |
+| `--forget-session`                    | delete the saved sessionid/csrftoken and exit.               |
 
 ## Running the tests
 

@@ -10,6 +10,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
@@ -193,6 +194,76 @@ def _parse_cookie_input(value):
         return {name.strip(): cookie.strip()}
 
     return {"sessionid": value}
+
+
+def session_file_path():
+    """Where the saved cookies live (override with IG_SESSION_FILE)."""
+    override = os.environ.get("IG_SESSION_FILE", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or (Path.home() / "AppData" / "Roaming")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+    return Path(base) / "SoIG" / "session.json"
+
+
+def load_session(path=None):
+    """Read saved cookies, ignoring missing or corrupt files."""
+    path = Path(path).expanduser() if path else session_file_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        str(name): str(value)
+        for name, value in data.items()
+        if name in COOKIE_NAMES and str(value).strip()
+    }
+
+
+def save_session(cookies, path=None, username=None):
+    """Write cookies as JSON (0600) so later runs can reuse them."""
+    cookies = {
+        name: value
+        for name, value in (cookies or {}).items()
+        if name in COOKIE_NAMES and str(value).strip()
+    }
+    if not cookies.get("sessionid"):
+        return None
+
+    path = Path(path).expanduser() if path else session_file_path()
+    payload = dict(cookies)
+    payload["saved_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    if username:
+        payload["username"] = username
+
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+        os.chmod(path, 0o600)
+    except OSError:
+        return None
+    return path
+
+
+def forget_session(path=None):
+    """Delete the saved cookies; returns the path when something was removed."""
+    path = Path(path).expanduser() if path else session_file_path()
+    try:
+        path.unlink()
+    except OSError:
+        return None
+    return path
 
 
 def _clean_sessionid(value):
@@ -422,6 +493,8 @@ class main:
         retries=1,
         login=False,
         debug=False,
+        save_cookies=True,
+        session_file=None,
     ):
         self.user = user.strip().lstrip("@").rstrip("/")
         self.base_dir = os.getcwd()
@@ -459,6 +532,13 @@ class main:
         )
         self.force_login = login
         self.debug = debug
+        self.save_cookies = save_cookies
+        self.session_file = (
+            Path(session_file).expanduser() if session_file else session_file_path()
+        )
+        self._stored_session = (
+            {} if self._provided_cookies else load_session(self.session_file)
+        )
         self.get_profile()
 
     def _debug(self, message):
@@ -641,6 +721,7 @@ class main:
             print(f"\n{gr}[+]{nu} sessionid works{detail}")
             if len(self._provided_cookies) > 1:
                 print(f"{gr}[+]{nu} using {len(self._provided_cookies)} cookies")
+            self._save_session(self._provided_cookies)
             return
         print()
         if status == "invalid":
@@ -656,6 +737,50 @@ class main:
             )
         print()
 
+    def _use_stored_session(self):
+        """Reuse the cookies saved by an earlier run when they still work."""
+        if not self._stored_session:
+            return
+        self._set_cookies(self._stored_session)
+        status, detail = self._session_status()
+        if status == "valid":
+            self._session_verified = True
+            print(
+                f"\n{gr}[+]{nu} using the saved session{detail} "
+                f"({self.session_file})"
+            )
+            return
+        if status == "invalid":
+            print(
+                f"\n{re}[!]{gr} the saved session in {self.session_file} has expired "
+                f"({detail})."
+            )
+            self._set_cookies({})
+            self._stored_session = {}
+            if self.interactive:
+                print("    Please log in again.\n")
+                print(f"{re}[!]{gr} {LOGIN_HELP}\n")
+                if not self._prompt_for_cookies():
+                    self._explain_offline_login()
+            else:
+                self._explain_offline_login()
+            return
+        print(
+            f"\n{re}[!]{gr} could not verify the saved session ({detail}); "
+            "using it anyway."
+        )
+
+    def _save_session(self, cookies):
+        if not self.save_cookies:
+            return
+        path = save_session(cookies, self.session_file)
+        if path:
+            print(f"{gr}[+]{nu} saved session to {path}")
+        elif cookies.get("sessionid"):
+            print(
+                f"{re}[!]{gr} could not save the session to {self.session_file}"
+            )
+
     def _fetch_profile_with_login(self):
         """Fetch the profile, asking for a sessionid when Instagram demands one."""
         attempt = 0
@@ -669,6 +794,24 @@ class main:
                     raise InstagramError(str(exc)) from None
                 self._prompt_for_sessionid(exc)
             except RateLimitedError as exc:
+                if (
+                    not self.sessionid
+                    and self.interactive
+                    and self._prompts == 0
+                    and attempt == 0
+                ):
+                    # No session yet and Instagram is refusing the requests:
+                    # let the user try an authenticated one before giving up.
+                    print(
+                        f"\n{re}[!]{gr} Instagram refused every request and no "
+                        "session is set. Paste a sessionid to retry with an "
+                        "authenticated request, or press Enter to stop."
+                    )
+                    print(f"{re}[!]{gr} {LOGIN_HELP}\n")
+                    if self._prompt_for_cookies():
+                        attempt += 1
+                        continue
+                    raise
                 if not self.retry_wait or attempt >= self.retries:
                     raise
                 attempt += 1
@@ -679,8 +822,28 @@ class main:
                 )
                 time.sleep(wait)
 
+    def _ask_csrftoken(self, cookies):
+        """Ask for the csrftoken when the pasted value did not include one."""
+        if cookies.get("csrftoken"):
+            return cookies
+        prompt = (
+            f"{gr}csrftoken{nu} (optional, press Enter to fetch it "
+            "automatically): "
+        )
+        try:
+            value = _read_prompt(prompt)
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return cookies
+        value = (value or "").strip().strip('"').strip("'")
+        if value.lower().startswith("csrftoken="):
+            value = value.split("=", 1)[1].strip()
+        if value:
+            cookies = dict(cookies, csrftoken=value)
+        return cookies
+
     def _prompt_for_cookies(self):
-        """Ask for a cookie header until it is accepted; False if cancelled."""
+        """Ask for sessionid and csrftoken until they work; False if cancelled."""
         if not self.interactive:
             return False
 
@@ -704,25 +867,28 @@ class main:
 
             self._set_cookies(cookies)
             status, detail = self._session_status()
+            if status == "invalid":
+                print(
+                    f"{re}[!]{gr} that sessionid does not work ({detail}). "
+                    "Please try again, or press Enter to cancel.\n"
+                )
+                self._set_cookies({})
+                continue
+
+            self._prompts += 1
+            cookies = self._ask_csrftoken(cookies)
+            self._set_cookies(cookies)
+
             if status == "valid":
                 self._session_verified = True
-                self._prompts += 1
-                extra = f" | {len(cookies)} cookies" if len(cookies) > 1 else ""
-                print(f"{gr}[+]{nu} sessionid works{detail}{extra}\n")
-                return True
-            if status == "unknown":
-                self._prompts += 1
+                print(f"{gr}[+]{nu} sessionid works{detail}\n")
+            else:
                 print(
                     f"{re}[!]{gr} could not verify the sessionid ({detail}); "
                     "trying it anyway.\n"
                 )
-                return True
-
-            print(
-                f"{re}[!]{gr} that sessionid does not work ({detail}). "
-                "Please try again, or press Enter to cancel.\n"
-            )
-            self._set_cookies({})
+            self._save_session(cookies)
+            return True
 
     def _prompt_for_sessionid(self, error):
         """Ask for a sessionid until it is accepted; raise ``error`` to cancel."""
@@ -1143,18 +1309,26 @@ class main:
     def _announce_transport(self):
         backend = "curl_cffi (Chrome impersonation)" if self.impersonating else "requests"
         self._debug(f"transport: {backend}")
-        if not self._provided_cookies and not self.force_login:
+        if (
+            not self._provided_cookies
+            and not self._stored_session
+            and not self.force_login
+        ):
             print(
                 f"\n{re}[!]{gr} no sessionid is set: Instagram will only expose the "
                 "public profile metadata (name, followers, following, posts).\n"
                 f"    For bio, posts and tags run: python3 main.py -u {self.user} "
                 "--login\n"
+                "    The sessionid and csrftoken you enter are saved for later "
+                f"runs in {self.session_file}\n"
             )
 
     def get_profile(self):
         extra.write(f"\n{gr}[+]{nu} getting profile ...")
         self._announce_transport()
         self._use_provided_sessionid()
+        if not self.sessionid and not self.force_login:
+            self._use_stored_session()
         if self.force_login:
             self.offer_login()
         self.p_data = self._fetch_profile_with_login()
