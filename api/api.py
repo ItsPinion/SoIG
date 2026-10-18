@@ -488,6 +488,7 @@ class main:
         debug=False,
         save_cookies=True,
         session_file=None,
+        dump_page=None,
     ):
         self.user = user.strip().lstrip("@").rstrip("/")
         self.base_dir = os.getcwd()
@@ -502,6 +503,7 @@ class main:
         self._session_verified = False
         self._prompts = 0
         self._feed_items = {}
+        self._feed_edges = None
         self._user_id = None
         self.limited_data = False
         self._warned_limited = False
@@ -530,6 +532,7 @@ class main:
         self._stored_session = (
             {} if self._provided_cookies else load_session(self.session_file)
         )
+        self.dump_page = Path(dump_page).expanduser() if dump_page else None
         self._last_status = None
         self._last_url = ""
         self._last_bytes = 0
@@ -966,6 +969,10 @@ class main:
             message = _response_message(response) or ""
             if "log" in message.lower():
                 raise LoginRequiredError(f"the {source} says: {message}")
+            if message:
+                raise InstagramError(
+                    f"the {source} returned HTTP 400: {message}"
+                )
         if response.status_code >= 400:
             raise InstagramError(f"the {source} returned HTTP {response.status_code}")
 
@@ -1048,6 +1055,22 @@ class main:
             mobile=True,
         )
 
+    def _fetch_from_user_info(self):
+        """The app's user info endpoint, reached via the numeric id.
+
+        Instagram's web profile endpoints answer 400 for many web sessions
+        while the GraphQL post feed keeps working, so the id can still be
+        resolved from the feed and used here.
+        """
+        user_id = self._resolve_user_id()
+        if not user_id:
+            raise InstagramError("could not resolve the numeric user id")
+        return self._json_user(
+            USER_INFO_URL.format(user_id=user_id),
+            "user info API",
+            mobile=True,
+        )
+
     def _resolve_user_id(self):
         """Find the numeric id of the target account, if Instagram exposes it."""
         if self._user_id:
@@ -1066,6 +1089,18 @@ class main:
             except InstagramError:
                 continue
             value = user.get("pk") or user.get("id")
+            if value:
+                self._user_id = str(value)
+                return self._user_id
+        # Last resort: the post feed embeds the author, and the feed often
+        # keeps working when the profile endpoints are refused.
+        try:
+            edges = self._fetch_feed()
+        except InstagramError:
+            return None
+        for edge in edges:
+            node = edge.get("node", edge) if isinstance(edge, dict) else {}
+            value = _dig(node, "user", "pk") or _dig(node, "user", "id")
             if value:
                 self._user_id = str(value)
                 return self._user_id
@@ -1222,6 +1257,25 @@ class main:
                         return user
         return None
 
+    def _debug_markers(self, html):
+        """Say what an HTML page does and does not contain (for --debug)."""
+        if not self.debug:
+            return
+        markers = (
+            "xig_user_by_username",
+            '"follower_count"',
+            '"biography"',
+            "edge_owner_to_timeline_media",
+            "window._sharedData",
+            "data-sjs",
+        )
+        found = ", ".join(
+            f"{name}={'yes' if name in html else 'no'}" for name in markers
+        )
+        self._debug(
+            f"page has {html.count('<script')} script tags; markers: {found}"
+        )
+
     def _fetch_from_html(self):
         response = self._get(
             PROFILE_URL.format(username=self.user),
@@ -1238,6 +1292,14 @@ class main:
         self._step(
             f"profile page: {self._status_text()}, {len(response.text)} characters"
         )
+        self._debug_markers(response.text)
+        if self.dump_page:
+            try:
+                self.dump_page.parent.mkdir(parents=True, exist_ok=True)
+                self.dump_page.write_text(response.text, encoding="utf-8")
+                self._step(f"saved the profile page HTML to {self.dump_page}")
+            except OSError as exc:
+                print(f"{re}[!]{gr} could not save the page HTML: {exc}")
         user = self._find_user_in_html(response.text)
         if user is not None:
             self.data_source = "profile page"
@@ -1277,6 +1339,7 @@ class main:
             ("user feed", self._fetch_from_feed),
             ("mobile profile API", self._fetch_from_mobile_api),
             ("mobile username lookup API", self._fetch_from_mobile_username_info),
+            ("user info API", self._fetch_from_user_info),
             ("mobile user feed", self._fetch_from_mobile_feed),
         )
 
@@ -1284,6 +1347,7 @@ class main:
         problems = []
         login_required = False
         rate_limit = None
+        fallback = None
         sources = self._profile_sources()
         total = len(sources)
         self._step(f"trying {total} profile sources ...")
@@ -1327,10 +1391,29 @@ class main:
                     f"{number}/{total} {label}: ok ({self._status_text()}, "
                     f"{time.monotonic() - started:.1f}s)"
                 )
-                return user
+                if not self.limited_data:
+                    return user
+                # Only public metadata so far: keep it and try the remaining
+                # endpoints for a richer payload.
+                if fallback is None:
+                    fallback = (user, self.data_source, self.limited_data)
+                self._step(
+                    f"{number}/{total} {label}: partial profile, looking for "
+                    "a fuller one ..."
+                )
+                self.limited_data = False
+                self.data_source = ""
+                continue
             problems.append(f"{label}: no profile data returned")
             self._debug(f"{label}: no profile data returned")
             self._step(f"{number}/{total} {label}: no profile data returned")
+
+        if fallback is not None:
+            user, source, limited = fallback
+            self.data_source = source
+            self.limited_data = limited
+            self._step(f"using the best available profile: {source}")
+            return user
 
         details = "\n    ".join(problems)
         message = f"could not retrieve profile data for '{self.user}'.\n    {details}"
@@ -1536,6 +1619,8 @@ class main:
 
     def _fetch_feed(self):
         """Fetch the first page of the user's posts from Instagram's feed query."""
+        if self._feed_edges is not None:
+            return self._feed_edges
         variables = {
             "after": None,
             "before": None,
@@ -1579,6 +1664,7 @@ class main:
         if not isinstance(edges, list):
             message = payload.get("message") if isinstance(payload, dict) else None
             raise InstagramError(message or "the post feed returned no posts")
+        self._feed_edges = edges
         return edges
 
     @staticmethod

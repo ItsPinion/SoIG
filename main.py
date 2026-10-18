@@ -37,6 +37,8 @@ ap.add_argument("--session-file", default=None, metavar="PATH",
                      "(default: ~/.config/SoIG/session.json)")
 ap.add_argument("--no-save-session", action="store_true",
                 help="do not save the sessionid/csrftoken to disk")
+ap.add_argument("--dump-page", default=None, metavar="PATH",
+                help="save the fetched profile page HTML for debugging")
 ap.add_argument("--forget-session", action="store_true",
                 help="delete the saved sessionid/csrftoken and exit")
 args = vars(ap.parse_args())
@@ -60,6 +62,7 @@ try:
         debug=args["debug"],
         save_cookies=not args["no_save_session"],
         session_file=args["session_file"],
+        dump_page=args["dump_page"],
     )
 except InstagramError as exc:
     print(f"\n{re}[!]{nu} {exc}\n")

@@ -113,6 +113,8 @@ other sources for the same profile:
 5. `users/<username>/usernameinfo/` and `feed/user/<username>/username/`
    (falling back to `feed/user/<id>/`)
 6. the same endpoints on `i.instagram.com` with the mobile app's headers
+7. `i.instagram.com/users/<id>/info/`, with the id taken from the post feed
+   when the lookup endpoints are refused
 
 It also loads `instagram.com` once per session so requests carry a matching
 `csrftoken`.
@@ -141,13 +143,13 @@ to the request that caused it:
 [step] saved session check: valid (HTTP 200)
 [+] using the saved session (logged in as @you) (/home/you/.config/SoIG/session.json)
 [step] session: set
-[step] trying 8 profile sources ...
-[step] 1/8 profile API ...
-[step] 1/8 profile API: rate limited (HTTP 429, 0.1s)
-[step] 2/8 profile page ...
+[step] trying 9 profile sources ...
+[step] 1/9 profile API ...
+[step] 1/9 profile API: rate limited (HTTP 429, 0.1s)
+[step] 2/9 profile page ...
 [step] profile page: HTTP 200, 318214 characters
 [step] profile page: no embedded profile JSON, only OpenGraph metadata (bio and posts are stripped for this request)
-[step] 2/8 profile page: ok (HTTP 200, 0.6s)
+[step] 2/9 profile page: ok (HTTP 200, 0.6s)
 [step] profile source: profile page metadata (metadata only)
 [step] not asking for another sessionid: the current one is valid, so Instagram is refusing the full profile for this account/IP
 [step] posts: loading the first page ...
@@ -246,6 +248,7 @@ A simple workflow of command used to run SoIG with a Description.
 | `--retry-wait SECONDS`                | wait and retry once after a 429.                             |
 | `--no-impersonate`                    | disable browser TLS impersonation (`curl_cffi`).             |
 | `--debug`                             | show each profile source that was tried and why it failed.   |
+| `--dump-page PATH`                    | save the profile page HTML for inspection.                   |
 | `--session-file PATH`                 | where saved cookies live.                                    |
 | `--no-save-session`                   | do not save the sessionid/csrftoken to disk.                 |
 | `--forget-session`                    | delete the saved sessionid/csrftoken and exit.               |

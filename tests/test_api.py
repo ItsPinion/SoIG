@@ -283,6 +283,14 @@ class FetchTests(BaseTestCase):
             with self.assertRaisesRegex(api.InstagramError, "404"):
                 self.make()._fetch_from_api()
 
+    def test_api_400_reports_instagram_message(self):
+        response = FakeResponse(
+            status_code=400, payload={"message": "invalid parameters"}
+        )
+        with mock.patch.object(api.main, "_get", return_value=response):
+            with self.assertRaisesRegex(api.InstagramError, "invalid parameters"):
+                self.make()._fetch_from_api()
+
     def test_api_login_wall(self):
         response = FakeResponse(
             url="https://www.instagram.com/accounts/login/?next=/prottoy.raha.r/"
@@ -740,6 +748,64 @@ class UpgradeTests(BaseTestCase):
 ANSI = __import__("re").compile(r"\x1b\[[0-9;]*m")
 
 
+class UserInfoSourceTests(BaseTestCase):
+    """The app's /users/<id>/info/ endpoint as a last-resort full profile."""
+
+    def test_user_id_falls_back_to_the_feed(self):
+        feed = [{"node": {"user": {"pk": 999, "username": "prottoy.raha.r"}}}]
+        ig = self.make()
+        with mock.patch.object(
+            api.main, "_fetch_feed", return_value=feed
+        ), mock.patch.object(
+            api.main, "_fetch_from_username_info",
+            side_effect=api.InstagramError("400"),
+        ), mock.patch.object(
+            api.main, "_fetch_from_mobile_username_info",
+            side_effect=api.InstagramError("400"),
+        ):
+            self.assertEqual(ig._resolve_user_id(), "999")
+
+    def test_user_info_uses_the_resolved_id(self):
+        def fake_get(url, **kwargs):
+            if "/users/12345/info/" in url:
+                return FakeResponse(
+                    payload={"user": dict(USER, biography="from info")}
+                )
+            return FakeResponse(status_code=400, payload={"message": "nope"})
+
+        ig = self.make()
+        with mock.patch.object(
+            api.main, "_resolve_user_id", return_value="12345"
+        ), mock.patch.object(api.main, "_get", side_effect=fake_get):
+            user = ig._fetch_from_user_info()
+        self.assertEqual(user["biography"], "from info")
+
+    def test_user_info_is_tried_after_the_profile_apis(self):
+        labels = [label for label, _ in self.make()._profile_sources()]
+        self.assertIn("user info API", labels)
+        self.assertLess(labels.index("profile API"), labels.index("user info API"))
+
+
+class PageDumpTests(BaseTestCase):
+    def test_dump_page_writes_the_html(self):
+        path = os.path.join(self.tmp.name, "page.html")
+        html = MetadataFallbackTests.META_HTML
+        with mock.patch.object(
+            api.main, "_get", return_value=FakeResponse(text=html)
+        ):
+            self.new_main(user="_thessb17_", interactive=False, dump_page=path)
+        with open(path, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), html)
+
+    def test_without_the_flag_nothing_is_written(self):
+        html = MetadataFallbackTests.META_HTML
+        with mock.patch.object(
+            api.main, "_get", return_value=FakeResponse(text=html)
+        ):
+            self.new_main(user="_thessb17_", interactive=False)
+        self.assertEqual(os.listdir(self.tmp.name), [])
+
+
 class StepTraceTests(BaseTestCase):
     """Every stage must announce itself so a failure can be located."""
 
@@ -756,7 +822,7 @@ class StepTraceTests(BaseTestCase):
             "[step] target:",
             "[step] transport:",
             "[step] trying",
-            "/8 profile API ...",
+            "/9 profile API ...",
             ": ok (HTTP",
             "[step] done in",
         ):
@@ -773,8 +839,8 @@ class StepTraceTests(BaseTestCase):
             with self.assertRaises(api.InstagramError):
                 self.new_main(user="prottoy.raha.r", interactive=False)
         text = ANSI.sub("", out.getvalue())
-        self.assertIn("1/8 profile API", text)
-        self.assertIn("2/8 profile page", text)
+        self.assertIn("1/9 profile API", text)
+        self.assertIn("2/9 profile page", text)
         self.assertIn("rate limited (HTTP 429", text)
 
     def test_metadata_only_run_names_the_stripped_payload(self):
