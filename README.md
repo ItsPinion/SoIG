@@ -16,8 +16,8 @@ The Instagram OSINT Tool gets a range of information from an Instagram account t
 
 ### Prerequisites
 
-- Python 3 or higher.
-- Linux OS ex. Ubuntu or Kali Linux.
+- Python 3.8 or higher.
+- Linux, macOS or Windows.
 
 ### Project setup
 
@@ -50,8 +50,30 @@ $ pip install -r requirements.txt
 
 ```sh
 # Running the Script
-$ python3 main.py
+$ python3 main.py --username <username>
+
+# also scrape every post, save the results and list all used tags
+$ python3 main.py --username <username> --postscrap --savedata --tagscrap
 ```
+
+#### If Instagram asks for a login
+
+Instagram only returns profile data to a subset of logged-out requests and often
+answers with a login page instead. If SoIG reports that the profile could not be
+retrieved:
+
+1. Log in to <https://www.instagram.com> in your browser.
+2. Open the developer tools, go to **Application/Storage → Cookies →
+   instagram.com** and copy the value of the `sessionid` cookie.
+3. Export it for the current shell and run the tool again:
+
+```sh
+$ export IG_SESSIONID="<sessionid value>"
+$ python3 main.py --username <username>
+```
+
+Use your own account, keep the value private and log out / rotate the session
+when you are done. Scraping is still subject to Instagram's rate limits.
 
 ## Usage
 
@@ -63,6 +85,13 @@ A simple workflow of command used to run SoIG with a Description.
 | `-u` USERNAME , `--username` USERNAME | username of account to scan.                              |
 | `-p` , `--postscrap`                  | scrape all uploaded images info.                          |
 | `-s` , `--savedata`                   | save data to file ( save profile pic, info , post info ). |
+| `-t` , `--tagscrap`                   | list all used tags (the five most used are shown by default). |
+
+## Running the tests
+
+```sh
+$ python -m unittest discover -s tests
+```
 
 ## Contributing
 

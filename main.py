@@ -1,8 +1,10 @@
 #!/bin/env python3
 
-import os
 import argparse
-from api.api import *
+import os
+import sys
+
+from api.api import InstagramError, main, nu, re
 
 ap = argparse.ArgumentParser()
 ap.add_argument("-u", "--username", required=True,
@@ -16,9 +18,15 @@ ap.add_argument("-t", "--tagscrap", action="store_true",
 args = vars(ap.parse_args())
 
 os.system('clear') if os.name == 'posix' else os.system('cls')
-ig = main(user=args["username"])
+try:
+    ig = main(user=args["username"])
+except InstagramError as exc:
+    print(f"\n{re}[!]{nu} {exc}\n")
+    sys.exit(1)
+
 if args['tagscrap']:
     ig.print_data()
+    ig.most_common_tags()
 else:
     ig.print_data_()
 
