@@ -1072,51 +1072,34 @@ class main:
         ]
 
     def _ask_extra_cookies(self, cookies):
-        """Ask for ds_user_id / mid when the pasted value did not include them.
+        """Ask for ds_user_id and mid one at a time, when they are missing.
 
-        Both come from the same browser Cookie header; they are optional
-        because some endpoints work without them, but asking here is the
-        difference between a bare sessionid and a usable web session.
+        Both come from the same browser Cookie header. They are optional,
+        because some endpoints work without them, but a bare sessionid leaves
+        Instagram very little to identify the browser with.
         """
-        missing = self._missing_extras(cookies)
-        if not missing:
-            return cookies
-        label = " and ".join(missing)
-        prompt = (
-            f"{gr}{label}{nu} (optional, from the same Cookie header as "
-            f"'ds_user_id=...; mid=...'): "
-        )
-        try:
-            value = _read_prompt(prompt)
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return cookies
-        value = (value or "").strip()
-        if not value:
-            return cookies
-        if value.lower().startswith("cookie:"):
-            value = value[7:].strip()
-
-        parsed = {}
-        if "=" in value:
-            for part in value.split(";"):
-                name, separator, cookie = part.strip().partition("=")
-                if separator and name.strip() and cookie.strip():
-                    parsed[name.strip()] = cookie.strip()
-        elif missing == ["ds_user_id"] or value.isdigit():
-            # A bare number is the ds_user_id shown in the Cookie header.
-            parsed["ds_user_id"] = value
-        if not parsed:
-            print(
-                f"{re}[!]{gr} could not read that value; skipping the extra "
-                "cookies.\n"
-            )
-            return cookies
         merged = dict(cookies)
-        for name in ("ds_user_id", "mid"):
-            if parsed.get(name):
-                merged[name] = parsed[name]
-        stored = [name for name in ("ds_user_id", "mid") if merged.get(name)]
+        stored = []
+        for name in self._missing_extras(cookies):
+            prompt = (
+                f"{gr}{name}{nu} (optional, from the same Cookie header): "
+            )
+            try:
+                value = _read_prompt(prompt)
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            value = (value or "").strip()
+            if not value:
+                continue
+            if value.lower().startswith("cookie:"):
+                value = value[7:].strip()
+            if value.lower().startswith(f"{name}="):
+                value = value.split("=", 1)[1].strip()
+            if not value:
+                continue
+            merged[name] = value
+            stored.append(name)
         if stored:
             print(f"{gr}[+]{nu} also storing {', '.join(stored)}")
         return merged

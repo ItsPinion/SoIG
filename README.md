@@ -243,15 +243,16 @@ Instead of pasting one long string, SoIG asks for the values it needs:
 ```text
 sessionid (or the whole Cookie header): …
 csrftoken (optional, press Enter to fetch it automatically): …
-ds_user_id and mid (optional, from the same Cookie header as 'ds_user_id=...; mid=...'):
+ds_user_id (optional, from the same Cookie header): …
+mid (optional, from the same Cookie header): …
 [+] also storing ds_user_id, mid
 [+] sessionid works (logged in as @you)
 [+] saved session to /home/you/.config/SoIG/session.json
 ```
 
-`ds_user_id` and `mid` are only asked for when the pasted value did not already
-contain them; a bare number is stored as `ds_user_id`. Paste the whole Cookie
-header once and the follow-up question does not appear.
+`ds_user_id` and `mid` are asked for **one at a time**, and only when the pasted
+value did not already contain them. Paste the whole Cookie header once and
+neither question appears.
 
 Every cookie is stored as JSON with owner-only permissions (`0600`, folder
 `0700`) and reused automatically on later runs:
