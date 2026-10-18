@@ -837,6 +837,87 @@ class ProfileGraphQLTests(BaseTestCase):
         self.assertIn("profile GraphQL", labels)
 
 
+class AnonymousPageTests(BaseTestCase):
+    """The logged-out page embeds the profile; the logged-in page does not."""
+
+    EMBEDDED = {
+        "require": [
+            [
+                [
+                    "ScheduledServerJS",
+                    "handle",
+                    None,
+                    [
+                        {
+                            "__bbox": {
+                                "result": {
+                                    "data": {
+                                        "xig_user_by_username": {
+                                            "username": "prottoy.raha.r",
+                                            "pk": "123",
+                                            "biography": "anon bio",
+                                            "follower_count": 321,
+                                            "following_count": 1,
+                                            "media_count": 4,
+                                            "profile_pic_url": "https://cdn.example/a.jpg",
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                ]
+            ]
+        ]
+    }
+    HTML = (
+        '<html><body><script type="application/json" data-sjs>'
+        + json.dumps(EMBEDDED)
+        + "</script></body></html>"
+    )
+
+    def test_parser_finds_the_embedded_profile(self):
+        user = api._embedded_profile(self.HTML, "prottoy.raha.r")
+        self.assertEqual(user["biography"], "anon bio")
+        self.assertEqual(user["id"], "123")
+
+    def test_parser_ignores_other_users(self):
+        self.assertIsNone(api._embedded_profile(self.HTML, "someone_else"))
+
+    def test_source_uses_browser_navigation_headers(self):
+        session = mock.Mock()
+        session.get.return_value = FakeResponse(text=self.HTML)
+        ig = self.make()
+        with mock.patch.object(
+            api.main, "_anonymous_session", return_value=session
+        ):
+            user = ig._fetch_from_anonymous_page()
+        self.assertEqual(user["biography"], "anon bio")
+        self.assertEqual(ig.data_source, "logged-out profile page")
+        headers = session.get.call_args.kwargs["headers"]
+        self.assertEqual(headers["Sec-Fetch-Mode"], "navigate")
+        self.assertEqual(headers["Sec-Fetch-Dest"], "document")
+
+    def test_anonymous_page_rescues_a_stripped_logged_in_page(self):
+        meta = (
+            "<html><head>"
+            '<meta property="og:title" '
+            'content="Prottoy (@prottoy.raha.r) • Instagram" />'
+            '<meta property="og:description" content="321 Followers, 1 Following, '
+            '4 Posts - See Instagram photos from @prottoy.raha.r" />'
+            "</head></html>"
+        )
+        session = mock.Mock()
+        session.get.return_value = FakeResponse(text=self.HTML)
+        with mock.patch.object(
+            api.main, "_get", return_value=FakeResponse(text=meta)
+        ), mock.patch.object(api.main, "_anonymous_session", return_value=session):
+            ig = self.new_main(user="prottoy.raha.r", interactive=False)
+        self.assertEqual(ig.output["bio"], "anon bio")
+        self.assertFalse(ig.limited_data)
+        self.assertEqual(ig.data_source, "logged-out profile page")
+
+
 class PageInspectTests(BaseTestCase):
     def test_reports_markers_and_script_sizes(self):
         path = os.path.join(self.tmp.name, "page.html")
@@ -911,7 +992,7 @@ class StepTraceTests(BaseTestCase):
             "[step] target:",
             "[step] transport:",
             "[step] trying",
-            "/10 profile API ...",
+            "/11 profile API ...",
             ": ok (HTTP",
             "[step] done in",
         ):
@@ -928,8 +1009,8 @@ class StepTraceTests(BaseTestCase):
             with self.assertRaises(api.InstagramError):
                 self.new_main(user="prottoy.raha.r", interactive=False)
         text = ANSI.sub("", out.getvalue())
-        self.assertIn("1/10 profile API", text)
-        self.assertIn("2/10 profile page", text)
+        self.assertIn("1/11 profile API", text)
+        self.assertIn("2/11 profile page", text)
         self.assertIn("rate limited (HTTP 429", text)
 
     def test_metadata_only_run_names_the_stripped_payload(self):

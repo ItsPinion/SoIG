@@ -430,6 +430,44 @@ def _json_after_marker(text, marker):
             start = index + max(len(marker), 1)
 
 
+def _iter_embedded_data(obj):
+    """Yield the data of every GraphQL result embedded in a page's JSON."""
+    if isinstance(obj, dict):
+        bbox = obj.get("__bbox")
+        result = bbox.get("result") if isinstance(bbox, dict) else None
+        if isinstance(result, dict) and isinstance(result.get("data"), dict):
+            yield result["data"]
+        for value in obj.values():
+            yield from _iter_embedded_data(value)
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            yield from _iter_embedded_data(value)
+
+
+def _embedded_profile(html, username):
+    """Find the profile Instagram embeds in a logged-out page's JSON scripts."""
+    wanted = str(username).casefold()
+    for match in regex.finditer(
+        r'<script type="application/json"[^>]*>(.*?)</script>', html, regex.DOTALL
+    ):
+        try:
+            payload = json.loads(match.group(1))
+        except ValueError:
+            continue
+        for data in _iter_embedded_data(payload):
+            user = data.get("xig_user_by_username")
+            if not isinstance(user, dict):
+                continue
+            if str(user.get("username", "")).casefold() != wanted:
+                continue
+            user = dict(user)
+            user.pop("polaris_ordered_timeline_connection", None)
+            if user.get("pk") and not user.get("id"):
+                user["id"] = user["pk"]
+            return user
+    return None
+
+
 def _is_user_payload(data):
     """True when a JSON object looks like an Instagram profile."""
     if not isinstance(data, dict) or "username" not in data:
@@ -611,6 +649,7 @@ class main:
         self.data_source = ""
         self.retry_wait = retry_wait
         self.retries = retries
+        self.proxy = (proxy or "").strip()
         self.session = self._new_session(impersonate=impersonate, proxy=proxy)
         headers = {"Accept-Language": "en-US,en;q=0.9"}
         if self.impersonating is False:
@@ -673,6 +712,22 @@ class main:
         proxy = (proxy or "").strip()
         if proxy:
             session.proxies.update({"http": proxy, "https": proxy})
+        return session
+
+    def _anonymous_session(self):
+        """A cookie-less session used to read the logged-out profile page.
+
+        Instagram only embeds the profile payload when the page is requested
+        like a browser navigation by a logged-out visitor; a request carrying
+        the session cookie gets a client-rendered shell instead.
+        """
+        if curl_requests is not None:
+            session = curl_requests.Session(impersonate="chrome")
+        else:
+            session = requests.Session()
+            session.headers["User-Agent"] = random.choice(useragent)
+        if self.proxy:
+            session.proxies.update({"http": self.proxy, "https": self.proxy})
         return session
 
     def _get(self, url, method="GET", **kwargs):
@@ -1367,6 +1422,9 @@ class main:
         raise (rate_limited or errors)[-1]
 
     def _find_user_in_html(self, html):
+        user = _embedded_profile(html, self.user)
+        if user is not None:
+            return user
         soup = BeautifulSoup(html, "html.parser")
         for script in soup.find_all("script"):
             text = script.string or script.get_text() or ""
@@ -1496,10 +1554,59 @@ class main:
             "the profile page did not contain embedded profile data"
         )
 
+    def _fetch_from_anonymous_page(self):
+        """Read the profile from a logged-out page load, as a browser would."""
+        session = self._anonymous_session()
+        headers = {
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        try:
+            response = session.get(
+                PROFILE_URL.format(username=self.user),
+                headers=headers,
+                timeout=REQUEST_TIMEOUT,
+            )
+        except Exception as exc:
+            raise InstagramError(
+                f"could not reach the logged-out profile page: {exc}"
+            ) from exc
+        self._last_status = getattr(response, "status_code", None)
+        self._check_status(response, "logged-out profile page")
+        self._step(
+            f"logged-out profile page: {self._status_text()}, "
+            f"{len(response.text)} characters"
+        )
+        if self.dump_page:
+            target = self.dump_page.with_name(
+                f"{self.dump_page.stem}.anonymous{self.dump_page.suffix}"
+            )
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(response.text, encoding="utf-8")
+                self._step(f"saved the logged-out page HTML to {target}")
+            except OSError as exc:
+                print(f"{re}[!]{gr} could not save the page HTML: {exc}")
+        user = _embedded_profile(response.text, self.user)
+        if user is None:
+            raise InstagramError(
+                "the logged-out profile page did not embed the profile"
+            )
+        self.data_source = "logged-out profile page"
+        return user
+
     def _profile_sources(self):
         return (
             ("profile API", self._fetch_from_api),
             ("profile page", self._fetch_from_html),
+            ("logged-out profile page", self._fetch_from_anonymous_page),
             ("profile JSON", self._fetch_from_page_json),
             ("profile GraphQL", self._fetch_from_profile_graphql),
             ("username lookup API", self._fetch_from_username_info),

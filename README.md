@@ -106,7 +106,9 @@ To keep working when `web_profile_info` is throttled, SoIG automatically tries
 other sources for the same profile:
 
 1. `users/web_profile_info/?username=`
-2. the profile page's embedded JSON (`data-sjs` / `xig_user_by_username`)
+2. the profile page's embedded JSON (`data-sjs` / `xig_user_by_username`),
+   fetched again as a **logged-out browser navigation**, because Instagram
+   only embeds the payload for those requests
 3. the profile page's OpenGraph metadata (works even when Instagram strips the
    JSON payload; gives name, followers, following, posts and avatar)
 4. `graphql/query/` with `PolarisProfilePageContentQuery`, the query the web
@@ -145,13 +147,13 @@ to the request that caused it:
 [step] saved session check: valid (HTTP 200)
 [+] using the saved session (logged in as @you) (/home/you/.config/SoIG/session.json)
 [step] session: set
-[step] trying 10 profile sources ...
-[step] 1/10 profile API ...
-[step] 1/10 profile API: rate limited (HTTP 429, 0.1s)
-[step] 2/10 profile page ...
+[step] trying 11 profile sources ...
+[step] 1/11 profile API ...
+[step] 1/11 profile API: rate limited (HTTP 429, 0.1s)
+[step] 2/11 profile page ...
 [step] profile page: HTTP 200, 318214 characters
 [step] profile page: no embedded profile JSON, only OpenGraph metadata (bio and posts are stripped for this request)
-[step] 2/10 profile page: ok (HTTP 200, 0.6s)
+[step] 2/11 profile page: ok (HTTP 200, 0.6s)
 [step] profile source: profile page metadata (metadata only)
 [step] not asking for another sessionid: the current one is valid, so Instagram is refusing the full profile for this account/IP
 [step] posts: loading the first page ...
