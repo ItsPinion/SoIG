@@ -542,9 +542,10 @@ class ui:
     @staticmethod
     def saved(kind, path):
         arrow = ui._glyphs()["arrow"]
-        plain = f"saved {kind}  {arrow} "
+        label = f"saved {kind:<12}"
+        plain = f"{label}  {arrow} "
         lines = ui._wrap(str(path), ui.width() - 2 - len(plain))
-        print(f"  {OK} saved {kind}  {dim}{arrow}{nu} {lines[0]}")
+        print(f"  {OK} {label}  {dim}{arrow}{nu} {lines[0]}")
         pad = " " * (2 + len(plain))
         for extra in lines[1:]:
             print(pad + extra)
