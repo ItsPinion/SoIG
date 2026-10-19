@@ -55,6 +55,8 @@ the same code is available as the `soig` command.
 - Private profiles are read through the feed instead of being refused up front,
   so accounts the session follows work.
 - The 0.1s-per-character animation was removed; runs start immediately.
+- The report no longer calls `tinyurl.com` to shorten image links; the real CDN
+  URL is shown (and saved), so a run never waits on a third-party service.
 
 ### Fixed
 
