@@ -148,14 +148,16 @@ desktop.ini
 *.swp
 *~
 
-# SoIG output: -s/--savedata writes these into a folder named after the
-# profile, and the avatar download always produces profile_pic.jpg
-profile_pic.jpg
+# SoIG run output (can contain scraped personal data). -s/--savedata writes
+# these names, and each profile folder also gets its own .gitignore so
+# anything else a run drops in there stays untracked.
+profile_pic.*
 profile_data.txt
 posts_data.txt
 tags.txt
+*.anonymous.html
 
-# SoIG sessions and local config (never commit Instagram cookies)
-session.json
-.soig_session.json
-.session.json
+# SoIG sessions and cookies (never commit Instagram credentials)
+*session*.json
+cookies*.json
+cookies.txt

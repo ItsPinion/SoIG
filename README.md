@@ -339,6 +339,11 @@ $ python3 main.py --username <username> -s   # save posts_data.txt, profile_data
 $ python3 main.py --username <username> -t   # print the full tag list instead of the top five
 ```
 
+`-s` writes a folder named after the profile in the current directory
+(`profile_data.txt`, `posts_data.txt`, `tags.txt`, `profile_pic.jpg`). The
+folder gets its own `.gitignore` (`*`), so scraped data - which can be personal
+- is never committed by accident.
+
 Tags are the hashtags found in post captions. `-t` prints the full list; with
 `-d` the trace also reports how many captions were scanned, so an empty list is
 explained rather than mysterious:
@@ -448,9 +453,9 @@ A simple workflow of command used to run SoIG with a Description.
 | ------------------------------------- | --------------------------------------------------------- |
 | `-h` , `--help`                       | show this help message and exit.                          |
 | `-u` USERNAME , `--username` USERNAME | username of account to scan (not needed with `-l`, `-F`, `-I`). |
-| `-p` , `--postscrap`                  | scrape all uploaded images info.                          |
-| `-s` , `--savedata`                   | save data to file ( save profile pic, info , post info ). |
-| `-t` , `--tagscrap`                   | list all used tags (hidden otherwise).                        |
+| `-p` , `--postscrap`                  | print every post (caption, likes, comments, date, URL).   |
+| `-s` , `--savedata`                   | download the avatar and save the profile, posts and tags. |
+| `-t` , `--tagscrap`                   | rank the hashtags used in the posts (hidden otherwise).   |
 | `-l`, `--login`                       | log in before scraping; alone: log in and exit.              |
 | `-x`, `--proxy PROXY`                 | route requests through an HTTP(S) proxy.                     |
 | `-w`, `--retry-wait SECONDS`          | wait and retry once after a 429.                             |

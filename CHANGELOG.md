@@ -29,6 +29,9 @@ the same code is available as the `soig` command.
   `4` rate limited, `130` interrupted.
 - Atomic session writes (temp file + `os.replace`) so a crash cannot truncate
   the saved cookies.
+- Every per-profile output folder gets a `.gitignore` (`*`), so scraped data
+  cannot be committed by accident; the folder name is sanitised so a username
+  can never point outside the working directory.
 - CI workflow running the test suite on Python 3.9-3.13, linting and building
   the wheel.
 

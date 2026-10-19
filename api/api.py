@@ -2748,9 +2748,23 @@ class main:
     def _extracted_from_print_data_2(self):
         ui.profile(self.output, self.user, self.data_source)
 
+    def _folder_name(self):
+        """A safe directory name for this profile (no path traversal)."""
+        name = regex.sub(r"[^A-Za-z0-9._-]+", "_", self.user).strip("._")
+        return name or "profile"
+
     def make_dir(self):
-        path = os.path.join(self.base_dir, self.user)
+        path = os.path.join(self.base_dir, self._folder_name())
         os.makedirs(path, exist_ok=True)
+        # This folder is SoIG's own output and scraped profiles can contain
+        # personal data, so make sure git never picks up whatever lands here.
+        marker = os.path.join(path, ".gitignore")
+        if not os.path.exists(marker):
+            try:
+                with open(marker, "w", encoding="utf-8") as handle:
+                    handle.write("# Created by SoIG: scraped data can be personal.\n*\n")
+            except OSError:
+                pass
         os.chdir(path)
 
     def scrap_uploads(self):

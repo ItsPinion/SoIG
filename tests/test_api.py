@@ -251,8 +251,10 @@ class ProfileTests(BaseTestCase):
         target = os.path.join(self.tmp.name, "prottoy.raha.r")
         self.assertEqual(
             sorted(os.listdir(target)),
-            ["posts_data.txt", "profile_data.txt", "profile_pic.jpg", "tags.txt"],
+            [".gitignore", "posts_data.txt", "profile_data.txt", "profile_pic.jpg", "tags.txt"],
         )
+        with open(os.path.join(target, ".gitignore"), encoding="utf-8") as f:
+            self.assertIn("*", f.read())
         with open(os.path.join(target, "posts_data.txt")) as f:
             posts = json.load(f)
         self.assertEqual(posts["0"]["likes"], "9")
@@ -260,6 +262,24 @@ class ProfileTests(BaseTestCase):
         self.assertNotIn("caption", posts["1"])
         with open(os.path.join(target, "tags.txt")) as f:
             self.assertEqual(json.load(f), ig.tags)
+
+    def test_output_folder_keeps_an_existing_gitignore(self):
+        target = os.path.join(self.tmp.name, "prottoy.raha.r")
+        os.makedirs(target)
+        with open(os.path.join(target, ".gitignore"), "w", encoding="utf-8") as handle:
+            handle.write("!keep.txt\n")
+        ig = self.make()
+        with mock.patch.object(ig, "_get", return_value=FakeResponse()):
+            ig.save_data()
+        with open(os.path.join(target, ".gitignore"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "!keep.txt\n")
+
+    def test_folder_name_cannot_escape_the_working_directory(self):
+        ig = self.make()
+        ig.user = "../../etc"
+        self.assertEqual(ig._folder_name(), "etc")
+        ig.user = "a/b c"
+        self.assertEqual(ig._folder_name(), "a_b_c")
 
 
 MODERN_USER = {
