@@ -1,0 +1,59 @@
+[H[2J[3J
+[1;32m[+][0m getting profile ...
+[1;36m[step][0m target: headlines.ban | login: False | save session: True | proxy: no
+[1;36m[step][0m transport: curl_cffi (Chrome impersonation)
+[1;36m[step][0m saved session: /home/prottoy/.config/SoIG/session.json (sessionid)
+[1;36m[debug][0m GET https://www.instagram.com/ -> HTTP 200 (1110578 bytes)
+[1;36m[step][0m checking the saved session with Instagram ...
+[1;36m[debug][0m GET https://www.instagram.com/api/v1/accounts/edit/web_form_data/ -> HTTP 200 (1221 bytes)
+[1;36m[step][0m saved session check: valid (HTTP 200)
+
+[1;32m[+][0m using the saved session (logged in as @prottoy.raha.r) (/home/prottoy/.config/SoIG/session.json)
+[1;36m[step][0m session: set
+[1;36m[step][0m trying 8 profile sources ...
+[1;36m[step][0m 1/8 profile API ...
+[1;36m[debug][0m GET https://www.instagram.com/api/v1/users/web_profile_info/ -> HTTP 400 (363 bytes)
+[1;36m[debug][0m profile API: the profile API returned HTTP 400
+[1;36m[step][0m 1/8 profile API: failed (HTTP 400) -> the profile API returned HTTP 400
+[1;36m[step][0m 2/8 profile page ...
+[1;36m[debug][0m GET https://www.instagram.com/headlines.ban/ -> HTTP 200 (735642 bytes)
+[1;36m[step][0m profile page: HTTP 200, 735640 characters
+[1;36m[step][0m profile page: no embedded profile JSON, only OpenGraph metadata (bio and posts are stripped for this request)
+[1;36m[debug][0m profile page: ok
+[1;36m[step][0m 2/8 profile page: ok (HTTP 200, 1.1s)
+[1;36m[step][0m profile source: profile page metadata (metadata only)
+[1;36m[step][0m not asking for another sessionid: the current one is valid, so Instagram is refusing the full profile for this account/IP
+[1;36m[step][0m posts: loading the first page ...
+[1;36m[debug][0m GET https://www.instagram.com/graphql/query/ -> HTTP 200 (403790 bytes)
+[1;36m[step][0m posts: 12 from the GraphQL feed
+[1;36m[step][0m done in 12.4s
+[1;36m
+  ╔═╗ ╔═╗     ╦  ╔═╗
+  ╚═╗ ║ ║     ║  ║ ╦
+  ╚═╝ ╚═╝  [1;32mo[1;36m  ╩  ╚═╝
+ 
+        [1;32mCoded By :
+  [1;32mYezz123[0m
+	            
+[1;32musername          : [0mheadlines.ban
+[1;32mname              : [0mThe Headlines
+[1;32murl               : [0minstagram.com/headlines.ban
+[1;32mfollowers         : [0m75000
+[1;32mfollowing         : [0m0
+[1;32mposts             : [0m8278
+[1;32mbio               : [0m
+[1;32mexternal url      : [0m
+[1;32mprivate           : [0mFalse
+[1;32mverified          : [0mFalse
+[1;32mprofile pic url   : [0mhttps://tinyurl.com/24alvsb2
+[1;32mbusiness account  : [0mFalse
+[1;32mconnected to fb   : [0m
+[1;32mjoined recently   : [0mFalse
+[1;32mbusiness category : [0m
+
+[1;31m[!][1;32m only the public profile metadata was available (profile page metadata): followers/following/posts are shown, but bio, posts and tags are unavailable.
+    The session itself is valid, so logging in again will not help: Instagram is refusing the full profile for this account/IP. Wait a few minutes and retry, or try another network with --proxy.
+
+[1;32m[+][0m most used user tags : 
+
+

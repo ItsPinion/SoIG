@@ -37,6 +37,12 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Scratch and backup files
+*.tmp
+*.bak
+*.orig
+*.rej
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -50,6 +56,7 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.ruff_cache/
 
 # Translations
 *.mo
@@ -103,7 +110,10 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
+.venv*/
 env/
 venv/
 ENV/
@@ -127,3 +137,25 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# OS and editor metadata
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# SoIG output: -s/--savedata writes these into a folder named after the
+# profile, and the avatar download always produces profile_pic.jpg
+profile_pic.jpg
+profile_data.txt
+posts_data.txt
+tags.txt
+
+# SoIG sessions and local config (never commit Instagram cookies)
+session.json
+.soig_session.json
+.session.json

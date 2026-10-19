@@ -1,6 +1,5 @@
-beautifulsoup4==4.6.0
-certifi==2022.12.7
-charset-normalizer==2.0.3
-idna==3.2
-requests==2.26.0
-urllib3==1.26.6
+# Runtime dependencies. pyproject.toml is the source of truth; this file stays
+# for the plain `pip install -r requirements.txt` workflow.
+beautifulsoup4>=4.12,<5
+requests>=2.31,<3
+curl_cffi>=0.7
