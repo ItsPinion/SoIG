@@ -84,10 +84,7 @@ class BaseTestCase(unittest.TestCase):
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(self.tmp.name)
         self.session_path = os.path.join(self.tmp.name, "session.json")
-        for name, value in (
-            ("tiny_url", mock.Mock(side_effect=lambda url: url)),
-            ("write", mock.Mock()),
-        ):
+        for name, value in (("write", mock.Mock()),):
             patcher = mock.patch.object(api.extra, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1195,13 +1192,23 @@ class AnonymousPageTests(BaseTestCase):
 
     def test_source_uses_browser_navigation_headers(self):
         session = mock.Mock()
-        session.get.return_value = FakeResponse(text=self.HTML)
+        session.request.return_value = FakeResponse(text=self.HTML)
+
+        def fake_get(url, **kwargs):
+            job = kwargs.pop("_session", None)
+            if job is not None:
+                return job.request("GET", url, **kwargs)
+            raise AssertionError(url)
+
         ig = self.make()
-        with mock.patch.object(api.main, "_anonymous_session", return_value=session):
+        with (
+            mock.patch.object(api.main, "_anonymous_session", return_value=session),
+            mock.patch.object(api.main, "_get", side_effect=fake_get),
+        ):
             user = ig._fetch_from_anonymous_page()
         self.assertEqual(user["biography"], "anon bio")
         self.assertEqual(ig.data_source, "logged-out profile page")
-        headers = session.get.call_args.kwargs["headers"]
+        headers = session.request.call_args.kwargs["headers"]
         self.assertEqual(headers["Sec-Fetch-Mode"], "navigate")
         self.assertEqual(headers["Sec-Fetch-Dest"], "document")
 
@@ -1247,9 +1254,16 @@ class AnonymousPageTests(BaseTestCase):
             "</head></html>"
         )
         session = mock.Mock()
-        session.get.return_value = FakeResponse(text=html)
+        session.request.return_value = FakeResponse(text=html)
+
+        def fake_get(url, **kwargs):
+            job = kwargs.pop("_session", None)
+            if job is not None:
+                return job.request("GET", url, **kwargs)
+            return FakeResponse(text=meta)
+
         with (
-            mock.patch.object(api.main, "_get", return_value=FakeResponse(text=meta)),
+            mock.patch.object(api.main, "_get", side_effect=fake_get),
             mock.patch.object(api.main, "_anonymous_session", return_value=session),
         ):
             ig = self.new_main(user="prottoy.raha.r", interactive=False)
@@ -1266,9 +1280,16 @@ class AnonymousPageTests(BaseTestCase):
             "</head></html>"
         )
         session = mock.Mock()
-        session.get.return_value = FakeResponse(text=self.HTML)
+        session.request.return_value = FakeResponse(text=self.HTML)
+
+        def fake_get(url, **kwargs):
+            job = kwargs.pop("_session", None)
+            if job is not None:
+                return job.request("GET", url, **kwargs)
+            return FakeResponse(text=meta)
+
         with (
-            mock.patch.object(api.main, "_get", return_value=FakeResponse(text=meta)),
+            mock.patch.object(api.main, "_get", side_effect=fake_get),
             mock.patch.object(api.main, "_anonymous_session", return_value=session),
         ):
             ig = self.new_main(user="prottoy.raha.r", interactive=False)

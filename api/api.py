@@ -11,8 +11,6 @@ import sys
 import textwrap
 import threading
 import time
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 import requests
@@ -1104,19 +1102,6 @@ def inspect_page(path):
 
 class extra:
     @staticmethod
-    def tiny_url(url):
-        if not url:
-            return ""
-        try:
-            apiurl = "https://tinyurl.com/api-create.php?url="
-            with urllib.request.urlopen(
-                apiurl + urllib.parse.quote(url, safe=""), timeout=5
-            ) as response:
-                return response.read().decode("utf-8").strip()
-        except Exception:  # noqa: BLE001 - cosmetic, must never break a scrape
-            return url
-
-    @staticmethod
     def write(in_text):
         """Write text immediately.
 
@@ -1274,10 +1259,13 @@ class main:
         return session
 
     def _get(self, url, method="GET", **kwargs):
+        # ``_session`` lets a caller (the logged-out page) reuse this method's
+        # error handling and status bookkeeping with a throwaway session.
+        session = kwargs.pop("_session", None) or self.session
         kwargs.setdefault("timeout", REQUEST_TIMEOUT)
         self._last_url = url
         try:
-            response = self.session.request(method, url, **kwargs)
+            response = session.request(method, url, **kwargs)
         except Exception as exc:  # transport errors differ per backend
             self._last_status = None
             self._debug(f"GET {url} failed: {exc}")
@@ -2078,12 +2066,12 @@ class main:
             "Upgrade-Insecure-Requests": "1",
         }
         try:
-            response = session.get(
+            response = self._get(
                 PROFILE_URL.format(username=self.user),
                 headers=headers,
-                timeout=REQUEST_TIMEOUT,
+                _session=session,
             )
-        except Exception as exc:
+        except InstagramError as exc:
             raise InstagramError(f"could not reach the logged-out profile page: {exc}") from exc
         self._last_status = getattr(response, "status_code", None)
         self._check_status(response, "logged-out profile page")
@@ -2386,7 +2374,7 @@ class main:
             "external url": str(external_url or ""),
             "private": str(self.is_private),
             "verified": str(_as_bool(p_data.get("is_verified"))),
-            "profile pic url": extra.tiny_url(self.profile_pic_url),
+            "profile pic url": str(self.profile_pic_url or ""),
             "business account": str(
                 _as_bool(p_data.get("is_business_account"))
                 or _as_bool(p_data.get("is_professional_account"))
@@ -2840,7 +2828,7 @@ class main:
         posts = {}
         for index, post in enumerate(self.posts):
             entry = {key: value for key, value in post.items() if key not in ("picture", "caption")}
-            entry["picture"] = extra.tiny_url(post["picture"])
+            entry["picture"] = post["picture"]
             if post["caption"]:
                 entry["caption"] = post["caption"]
             posts[index] = entry
