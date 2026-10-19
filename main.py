@@ -16,14 +16,13 @@ from pathlib import Path
 
 from api import __version__
 from api.api import (
+    WARN,
     InstagramError,
     LoginRequiredError,
     RateLimitedError,
     forget_session,
     inspect_page,
     main,
-    nu,
-    re,
     session_file_path,
     set_color,
     set_progress,
@@ -62,10 +61,17 @@ def build_parser():
         help="username of account to scan (not needed with -l, -F or -I)",
     )
     ap.add_argument(
-        "-p", "--postscrap", action="store_true", help="scrape all uploaded images info "
+        "-p",
+        "--postscrap",
+        action="store_true",
+        help="print every post (caption, likes, comments, date, URL)",
     )
-    ap.add_argument("-s", "--savedata", action="store_true", help="save data to file")
-    ap.add_argument("-t", "--tagscrap", action="store_true", help="list often used tags")
+    ap.add_argument(
+        "-s", "--savedata", action="store_true", help="download the avatar and save the data files"
+    )
+    ap.add_argument(
+        "-t", "--tagscrap", action="store_true", help="rank the hashtags used in the posts"
+    )
     ap.add_argument("-x", "--proxy", default=None, help="HTTP(S) proxy to use")
     ap.add_argument(
         "-i",
@@ -92,7 +98,7 @@ def build_parser():
         "-d",
         "--debug",
         action="store_true",
-        help="show which profile sources were tried and why they failed",
+        help="print the full [step] trace with URLs and statuses",
     )
     ap.add_argument(
         "-f",
@@ -141,7 +147,9 @@ def build_parser():
         action="store_true",
         help="delete the saved sessionid/csrftoken and exit",
     )
-    ap.add_argument("-q", "--quiet", action="store_true", help="hide progress lines and the banner")
+    ap.add_argument(
+        "-q", "--quiet", action="store_true", help="hide the progress line and the banner"
+    )
     ap.add_argument(
         "-c",
         "--no-color",
@@ -201,11 +209,12 @@ def _clear_screen():
 def _report(ig, args):
     if args["tagscrap"]:
         ig.print_data()
-        ig.most_common_tags()
     else:
         ig.print_data_()
     if args["postscrap"]:
         ig.scrap_uploads()
+    if args["tagscrap"]:
+        ig.most_common_tags()
     if args["savedata"]:
         ig.save_data()
 
@@ -223,10 +232,10 @@ def _run(parser, args):
     if args["forget_session"]:
         removed = forget_session(args["session_file"])
         if removed:
-            print(f"{re}[!]{nu} removed the saved session: {removed}")
+            print(f"  {WARN} removed the saved session: {removed}")
         else:
             target = args["session_file"] or session_file_path()
-            print(f"{re}[!]{nu} no saved session at {target}")
+            print(f"  {WARN} no saved session at {target}")
         return EXIT_OK, None, None
 
     if args["max_posts"] < 0:
@@ -267,21 +276,21 @@ def _run(parser, args):
             return EXIT_OK, ig, None
         _report(ig, args)
     except LoginRequiredError as exc:
-        print(f"\n{re}[!]{nu} {exc}\n")
+        print(f"\n  {WARN} {exc}\n")
         print("    Log in first: python3 main.py --login\n")
         return EXIT_LOGIN_REQUIRED, None, str(exc)
     except RateLimitedError as exc:
-        print(f"\n{re}[!]{nu} {exc}\n")
+        print(f"\n  {WARN} {exc}\n")
         print("    Wait a few minutes, retry with --retry-wait 60, or use --proxy.\n")
         return EXIT_RATE_LIMITED, None, str(exc)
     except InstagramError as exc:
-        print(f"\n{re}[!]{nu} {exc}\n")
+        print(f"\n  {WARN} {exc}\n")
         return EXIT_ERROR, None, str(exc)
     except KeyboardInterrupt:
-        print(f"\n{re}[!]{nu} cancelled\n")
+        print(f"\n  {WARN} cancelled\n")
         return EXIT_INTERRUPTED, None, "cancelled"
     except OSError as exc:
-        print(f"\n{re}[!]{nu} {exc}\n")
+        print(f"\n  {WARN} {exc}\n")
         return EXIT_ERROR, None, str(exc)
     return EXIT_OK, ig, None
 
@@ -319,7 +328,7 @@ def cli(argv=None):
         try:
             _write_json(json_path, _document(ig, error=error, exit_code=code))
         except OSError as exc:
-            print(f"{re}[!]{nu} could not write {json_path}: {exc}", file=sys.stderr)
+            print(f"  {WARN} could not write {json_path}: {exc}", file=sys.stderr)
             if code == EXIT_OK:
                 code = EXIT_ERROR
     return code

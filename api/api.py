@@ -8,6 +8,7 @@ import random
 import re as regex
 import shutil
 import sys
+import textwrap
 import threading
 import time
 import urllib.parse
@@ -16,6 +17,8 @@ from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
+
+from . import __version__
 
 try:  # optional: makes requests look like a real Chrome build at the TLS level
     from curl_cffi import requests as curl_requests
@@ -44,6 +47,9 @@ nu = _Ansi("\033[0m")
 re = _Ansi("\033[1;31m")
 gr = _Ansi("\033[1;32m")
 cy = _Ansi("\033[1;36m")
+yl = _Ansi("\033[1;33m")
+bd = _Ansi("\033[1m")
+dim = _Ansi("\033[2m")
 _quiet = False
 
 
@@ -56,6 +62,31 @@ def set_quiet(enabled):
     """Silence progress lines and the banner; warnings and results still print."""
     global _quiet
     _quiet = bool(enabled)
+
+
+def _utf8(stream):
+    """True when ``stream`` can take box-drawing glyphs and block bars."""
+    encoding = (getattr(stream, "encoding", "") or "").lower()
+    return "utf" in encoding
+
+
+class _Mark:
+    """A one-character status mark that degrades to ASCII off UTF-8."""
+
+    def __init__(self, pretty, plain, color):
+        self.pretty = pretty
+        self.plain = plain
+        self.color = color
+
+    def __str__(self):
+        glyph = self.pretty if _utf8(sys.stdout) else self.plain
+        return f"{self.color}{glyph}{nu}"
+
+
+# The three marks every human-facing line starts with.
+OK = _Mark("✓", "+", gr)
+WARN = _Mark("!", "!", yl)
+BAD = _Mark("✗", "x", re)
 
 
 class _Status:
@@ -155,8 +186,7 @@ class _Status:
                 self._draw(*self._compose())
 
     def _unicode(self):
-        encoding = (getattr(self.stream, "encoding", "") or "").lower()
-        return "utf" in encoding
+        return _utf8(self.stream)
 
     def _bar_width(self, suffix=0):
         # Leave room for "  label   bar   suffix" so the line never wraps.
@@ -209,7 +239,9 @@ class _Status:
             )
 
         if _Ansi.enabled:
-            bar = "".join(f"{gr}{cell}{nu}" if cell == full else cell for cell in cells)
+            bar = "".join(
+                f"{gr}{cell}{nu}" if cell == full else f"{dim}{cell}{nu}" for cell in cells
+            )
         else:
             bar = cells
 
@@ -217,7 +249,7 @@ class _Status:
         if len(label) > self.LABEL_WIDTH:
             ellipsis = "…" if unicode_ok else "..."
             label = label[: self.LABEL_WIDTH - len(ellipsis)] + ellipsis
-        line = f"  {label:<{self.LABEL_WIDTH}}  {bar}  {suffix}"
+        line = f"  {bd}{label:<{self.LABEL_WIDTH}}{nu}  {bar}  {suffix}"
         visible = 2 + self.LABEL_WIDTH + 2 + width + 2 + len(suffix)
         return line, visible
 
@@ -251,6 +283,273 @@ def set_progress(enabled):
     _status.allowed = bool(enabled)
     if not enabled:
         _status.stop()
+
+
+class ui:
+    """The human-facing report: sectioned, aligned and width-aware.
+
+    Everything degrades gracefully: ASCII rules and marks when the terminal is
+    not UTF-8, no colour with ``-c`` or a pipe, and lines that never run past
+    the terminal width.
+    """
+
+    MAX_WIDTH = 78
+    BAR = 20
+
+    @staticmethod
+    def width():
+        try:
+            columns = shutil.get_terminal_size((80, 24)).columns
+        except OSError:
+            columns = 80
+        return max(48, min(ui.MAX_WIDTH, columns - 1))
+
+    @staticmethod
+    def _glyphs():
+        if _utf8(sys.stdout):
+            return {
+                "accent": "▌",
+                "rule": "─",
+                "arrow": "→",
+                "dot": "·",
+                "bar": "█",
+                "track": "░",
+            }
+        return {"accent": "|", "rule": "-", "arrow": "->", "dot": "-", "bar": "#", "track": "-"}
+
+    @staticmethod
+    def _clip(text, limit):
+        """One line, collapsed and shortened with an ellipsis."""
+        flat = " ".join(str(text or "").split())
+        if len(flat) <= limit:
+            return flat
+        if _utf8(sys.stdout):
+            return flat[: max(1, limit - 1)].rstrip() + "…"
+        return flat[: max(1, limit - 3)].rstrip() + "..."
+
+    @staticmethod
+    def count(value):
+        """'74877' -> '74,877'; 1.2K-style shorthand is kept as-is."""
+        text = str(value if value is not None else "").strip()
+        if not text:
+            return "0"
+        match = regex.fullmatch(r"([0-9][0-9,.]*)\s*([kKmMbB])?", text)
+        if not match:
+            return text
+        number, suffix = match.group(1), match.group(2)
+        if suffix:
+            return f"{number}{suffix.upper()}"
+        digits = number.replace(",", "")
+        if not digits.isdigit():
+            return text
+        return f"{int(digits):,}"
+
+    @staticmethod
+    def when(value):
+        """An ISO timestamp as '02 Mar 2026'; anything else is left alone."""
+        text = str(value or "").strip()
+        if not text or text.lower() in {"none", "nat"}:
+            return ""
+        try:
+            moment = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return ui._clip(text, 19)
+        return moment.strftime("%d %b %Y")
+
+    @staticmethod
+    def section(title, note=""):
+        """'▌ PROFILE' with an optional right-aligned note and a full rule."""
+        glyph = ui._glyphs()
+        head = f"  {cy}{glyph['accent']}{nu} {bd}{title.upper()}{nu}"
+        if note:
+            gap = ui.width() - (4 + len(title)) - len(note)
+            if gap > 1:
+                head += " " * gap + f"{dim}{note}{nu}"
+        return f"\n{head}\n{dim}{glyph['rule'] * ui.width()}{nu}\n"
+
+    @staticmethod
+    def banner():
+        """The framed wordmark printed once at the top of a run."""
+        if _quiet:
+            return
+        glyph = ui._glyphs()
+        width = ui.width()
+        inner = width - 2
+        tagline = "Instagram profile scraper"
+        version = f"v{__version__}"
+        plain = f"  SoIG  {glyph['dot']}  {tagline}"
+        shown = (
+            f"  {cy}{bd}SoIG{nu}{dim}  {glyph['dot']}  {nu}{tagline}"
+            + " " * max(1, inner - len(plain) - len(version) - 2)
+            + f"{dim}{version}{nu}  "
+        )
+        if inner - len(plain) - len(version) < 3:
+            # Too narrow for the tagline: keep just the wordmark and version.
+            plain = "  SoIG"
+            shown = (
+                f"  {cy}{bd}SoIG{nu}"
+                + " " * max(1, inner - len(plain) - len(version) - 2)
+                + f"{dim}{version}{nu}  "
+            )
+        if _utf8(sys.stdout):
+            tl, tr, bl, br, line, side = "╭", "╮", "╰", "╯", "─", "│"
+        else:
+            tl = tr = bl = br = "+"
+            line, side = "-", "|"
+        print(f"\n{dim}{tl}{line * inner}{tr}{nu}")
+        print(f"{dim}{side}{nu}{shown}{dim}{side}{nu}")
+        print(f"{dim}{bl}{line * inner}{br}{nu}")
+
+    @staticmethod
+    def _wrap(text, width):
+        """Wrap prose on spaces and long URLs on slashes."""
+        text = str(text)
+        if len(text) <= width:
+            return [text]
+        if " " in text.strip():
+            return textwrap.wrap(text, width) or [text]
+        lines, rest = [], text
+        while len(rest) > width:
+            cut = rest.rfind("/", 0, width)
+            lines.append(rest[: cut if cut > 0 else width])
+            rest = rest[cut if cut > 0 else width :]
+        lines.append(rest)
+        return lines
+
+    @staticmethod
+    def _field(label, value, label_width):
+        room = ui.width() - 2 - label_width - 2
+        lines = ui._wrap(str(value), max(16, room)) or [""]
+        text = f"  {dim}{label:<{label_width}}{nu}  {lines[0]}"
+        pad = " " * (2 + label_width + 2)
+        return "\n".join([text] + [pad + extra for extra in lines[1:]])
+
+    @staticmethod
+    def profile(data, user="", source=""):
+        """The profile card: who it is, the three counts, then the details."""
+        data = data or {}
+        username = str(data.get("username") or user or "")
+        name = str(data.get("name") or "").strip()
+        if name:
+            name = ui._clip(name, max(12, ui.width() - len(username) - 24))
+        glyph = ui._glyphs()
+
+        note = f"via {source}" if source else ""
+        print(ui.section("Profile", note))
+
+        plain = f"@{username}"
+        shown = f"{bd}@{username}{nu}"
+        if name and name.casefold() != username.casefold():
+            plain += f"  {glyph['dot']}  {name}"
+            shown += f"{dim}  {glyph['dot']}  {nu}{bd}{name}{nu}"
+
+        badge_mark = "✓ " if _utf8(sys.stdout) else "+ "
+        badges = []  # (plain text, rendered text)
+        if str(data.get("verified") or "").strip().lower() == "true":
+            badges.append((f"{badge_mark}verified", f"{OK} {gr}verified{nu}"))
+        if str(data.get("private") or "").strip().lower() == "true":
+            badges.append(("private", f"{yl}private{nu}"))
+        plain_badges = "  ".join(plain_badge for plain_badge, _ in badges)
+        gap = ui.width() - 2 - len(plain) - len(plain_badges)
+        head = f"  {shown}"
+        if badges and gap > 0:
+            head += " " * gap + "  ".join(rendered for _, rendered in badges)
+        print(head)
+
+        url = str(data.get("url") or "").strip()
+        if url:
+            print(f"  {dim}{url}{nu}")
+
+        print()
+        sep = "│" if _utf8(sys.stdout) else "|"
+        bar = f" {dim}{sep}{nu} "
+        print(
+            f"  {dim}Followers{nu} {bd}{ui.count(data.get('followers')):>9}{nu}"
+            f"{bar}{dim}Following{nu} {bd}{ui.count(data.get('following')):>7}{nu}"
+            f"{bar}{dim}Posts{nu} {bd}{ui.count(data.get('posts')):>8}{nu}"
+        )
+
+        details = [
+            ("Bio", " ".join(str(data.get("bio") or "").split())),
+            ("Website", str(data.get("external url") or "").strip()),
+            ("Category", str(data.get("business category") or "").strip()),
+            ("Facebook", str(data.get("connected to fb") or "").strip()),
+            ("Business", "yes" if str(data.get("business account")).lower() == "true" else ""),
+            ("New account", "yes" if str(data.get("joined recently")).lower() == "true" else ""),
+        ]
+        rows = [(label, value) for label, value in details if value]
+        if rows:
+            print()
+            label_width = min(14, max(len(label) for label, _ in rows) + 2)
+            for label, value in rows:
+                print(ui._field(label, value, label_width))
+
+    @staticmethod
+    def posts(posts):
+        """A numbered post list with one compact metadata line per post."""
+        glyph = ui._glyphs()
+        total = len(posts)
+        print(ui.section("Posts", f"{total} loaded" if total else "nothing loaded"))
+        for index, post in enumerate(posts, start=1):
+            caption = ui._clip(post.get("caption"), ui.width() - 8)
+            if caption:
+                print(f"  {dim}{index:>3}{nu}  {caption}")
+            else:
+                print(f"  {dim}{index:>3}  (no caption){nu}")
+            meta = []
+            for key, label in (("likes", "likes"), ("comments", "comments")):
+                value = str(post.get(key) or "").strip()
+                if value:
+                    meta.append(f"{ui.count(value)} {label}")
+            if str(post.get("comments disabled") or "").lower() == "true":
+                meta.append("comments off")
+            when = ui.when(post.get("timestamp"))
+            if when:
+                meta.append(when)
+            location = str(post.get("location") or "").strip()
+            if location and location.lower() != "none":
+                meta.append(ui._clip(location, 24))
+            if meta:
+                joined = ui._clip(f" {glyph['dot']} ".join(meta), ui.width() - 7)
+                print(f"       {dim}{joined}{nu}")
+            url = str(post.get("url") or "").strip()
+            if url:
+                print(f"       {dim}{url}{nu}")
+            if index < total:
+                print()
+
+    @staticmethod
+    def hashtags(tags):
+        """A ranked tag list with inline bars; returns False when empty."""
+        glyph = ui._glyphs()
+        total = sum(tags.values())
+        note = f"{total} mentions {glyph['dot']} {len(tags)} unique" if tags else "none found"
+        print(ui.section("Hashtags", note))
+        if not tags:
+            return False
+        top = max(tags.values())
+        names = max(len(tag) for tag in tags)
+        name_width = min(18, names + 1)
+        counts = max(len(str(value)) for value in tags.values())
+        for tag, value in sorted(tags.items(), key=lambda item: (-item[1], item[0])):
+            filled = max(1, round(ui.BAR * value / top))
+            bar = f"{gr}{glyph['bar'] * filled}"
+            if filled < ui.BAR:
+                bar += f"{dim}{glyph['track'] * (ui.BAR - filled)}"
+            bar += f"{nu}"
+            label = ui._clip(tag, name_width - 1)
+            print(f"  {cy}#{label:<{name_width - 1}}{nu}  {bar}  {bd}{value:>{counts}}{nu}")
+        return True
+
+    @staticmethod
+    def saved(kind, path):
+        arrow = ui._glyphs()["arrow"]
+        plain = f"saved {kind}  {arrow} "
+        lines = ui._wrap(str(path), ui.width() - 2 - len(plain))
+        print(f"  {OK} saved {kind}  {dim}{arrow}{nu} {lines[0]}")
+        pad = " " * (2 + len(plain))
+        for extra in lines[1:]:
+            print(pad + extra)
 
 
 useragent = [
@@ -754,10 +1053,10 @@ def inspect_page(path):
     try:
         html = Path(path).expanduser().read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        print(f"{re}[!]{gr} could not read {path}: {exc}")
+        print(f"  {WARN} could not read {path}: {exc}")
         return False
 
-    print(f"{gr}[+]{nu} {path}: {len(html)} characters")
+    print(f"  {OK} {path}: {len(html)} characters")
     markers = (
         "xig_user_by_username",
         "follower_count",
@@ -836,18 +1135,7 @@ class extra:
 
     @staticmethod
     def banner():
-        if _quiet:
-            return
-        print(
-            f"""{cy}
-  ╔═╗ ╔═╗     ╦  ╔═╗
-  ╚═╗ ║ ║     ║  ║ ╦
-  ╚═╝ ╚═╝  {gr}o{cy}  ╩  ╚═╝
-
-        {gr}Coded By :
-  {gr}Yezz123{nu}
-\t            """
-        )
+        ui.banner()
 
 
 class main:
@@ -869,6 +1157,7 @@ class main:
         max_posts=0,
         login_only=False,
     ):
+        ui.banner()
         self.user = (user or "").strip().lstrip("@").rstrip("/")
         self.base_dir = os.getcwd()
         self.tags = {}
@@ -1137,7 +1426,7 @@ class main:
             return
         self._set_cookies(self._provided_cookies)
         if not self.sessionid:
-            print(f"\n{re}[!]{gr} the pasted cookies did not include a 'sessionid'; ignoring them.")
+            print(f"\n  {WARN} the pasted cookies did not include a 'sessionid'; ignoring them.")
             self._set_cookies({})
             return
         self._step("checking the sessionid with Instagram ...")
@@ -1145,19 +1434,17 @@ class main:
         self._step(f"sessionid check: {status} ({self._status_text()})")
         if status == "valid":
             self._session_verified = True
-            print(f"\n{gr}[+]{nu} sessionid works{detail}")
+            print(f"\n  {OK} sessionid works{detail}")
             if len(self._provided_cookies) > 1:
-                print(f"{gr}[+]{nu} using {len(self._provided_cookies)} cookies")
+                print(f"  {OK} using {len(self._provided_cookies)} cookies")
             self._save_session(self._provided_cookies)
             return
         print()
         if status == "invalid":
-            print(f"{re}[!]{gr} the provided sessionid does not work ({detail}); ignoring it.")
+            print(f"  {WARN} the provided sessionid does not work ({detail}); ignoring it.")
             self._set_sessionid(None)
         else:
-            print(
-                f"{re}[!]{gr} could not verify the provided sessionid ({detail}); trying it anyway."
-            )
+            print(f"  {WARN} could not verify the provided sessionid ({detail}); trying it anyway.")
         print()
 
     def _use_stored_session(self):
@@ -1173,21 +1460,21 @@ class main:
         self._step(f"saved session check: {status} ({self._status_text()})")
         if status == "valid":
             self._session_verified = True
-            print(f"\n{gr}[+]{nu} using the saved session{detail} ({self.session_file})")
+            print(f"\n  {OK} using the saved session{detail} ({self.session_file})")
             return
         if status == "invalid":
-            print(f"\n{re}[!]{gr} the saved session in {self.session_file} has expired ({detail}).")
+            print(f"\n  {WARN} the saved session in {self.session_file} has expired ({detail}).")
             self._set_cookies({})
             self._stored_session = {}
             if self.interactive:
                 print("    Please log in again.\n")
-                print(f"{re}[!]{gr} {LOGIN_HELP}\n")
+                print(f"  {WARN} {LOGIN_HELP}\n")
                 if not self._prompt_for_cookies():
                     self._explain_offline_login()
             else:
                 self._explain_offline_login()
             return
-        print(f"\n{re}[!]{gr} could not verify the saved session ({detail}); using it anyway.")
+        print(f"\n  {WARN} could not verify the saved session ({detail}); using it anyway.")
 
     def _save_session(self, cookies):
         if not self.save_cookies:
@@ -1202,9 +1489,9 @@ class main:
         cookies = merged
         path = save_session(cookies, self.session_file)
         if path:
-            print(f"{gr}[+]{nu} saved session to {path}")
+            print(f"  {OK} saved session to {path}")
         elif cookies.get("sessionid"):
-            print(f"{re}[!]{gr} could not save the session to {self.session_file}")
+            print(f"  {WARN} could not save the session to {self.session_file}")
 
     def _fetch_profile_with_login(self):
         """Fetch the profile, asking for a sessionid when Instagram demands one."""
@@ -1232,11 +1519,11 @@ class main:
                         "-> asking for a sessionid"
                     )
                     print(
-                        f"\n{re}[!]{gr} Instagram refused every request and no "
+                        f"\n  {WARN} Instagram refused every request and no "
                         "session is set. Paste a sessionid to retry with an "
                         "authenticated request, or press Enter to stop."
                     )
-                    print(f"{re}[!]{gr} {LOGIN_HELP}\n")
+                    print(f"  {WARN} {LOGIN_HELP}\n")
                     if self._prompt_for_cookies():
                         attempt += 1
                         continue
@@ -1250,8 +1537,7 @@ class main:
                     f"rate limited -> waiting {wait}s and retrying ({attempt}/{self.retries})"
                 )
                 print(
-                    f"\n{re}[!]{nu} rate limited; retrying in {wait}s "
-                    f"({attempt}/{self.retries}) ..."
+                    f"\n  {WARN} rate limited; retrying in {wait}s ({attempt}/{self.retries}) ..."
                 )
                 time.sleep(wait)
 
@@ -1290,7 +1576,7 @@ class main:
             cookies = _parse_cookie_input(value)
             if not cookies.get("sessionid"):
                 print(
-                    f"{re}[!]{gr} that value did not include a 'sessionid' cookie. "
+                    f"  {WARN} that value did not include a 'sessionid' cookie. "
                     "Please try again, or press Enter to cancel.\n"
                 )
                 continue
@@ -1299,7 +1585,7 @@ class main:
             status, detail = self._session_status()
             if status == "invalid":
                 print(
-                    f"{re}[!]{gr} that sessionid does not work ({detail}). "
+                    f"  {WARN} that sessionid does not work ({detail}). "
                     "Please try again, or press Enter to cancel.\n"
                 )
                 self._set_cookies({})
@@ -1311,9 +1597,9 @@ class main:
 
             if status == "valid":
                 self._session_verified = True
-                print(f"{gr}[+]{nu} sessionid works{detail}\n")
+                print(f"  {OK} sessionid works{detail}\n")
             else:
-                print(f"{re}[!]{gr} could not verify the sessionid ({detail}); trying it anyway.\n")
+                print(f"  {WARN} could not verify the sessionid ({detail}); trying it anyway.\n")
             self._save_session(cookies)
             return True
 
@@ -1323,7 +1609,7 @@ class main:
             raise error
 
         print()
-        print(f"{re}[!]{gr} {LOGIN_HELP}\n")
+        print(f"  {WARN} {LOGIN_HELP}\n")
         if not self._prompt_for_cookies():
             raise error from None
 
@@ -1331,7 +1617,7 @@ class main:
         """Let the user log in before scraping (--login)."""
         if self.sessionid:
             return
-        print(f"\n{re}[!]{gr} {LOGIN_HELP}\n")
+        print(f"\n  {WARN} {LOGIN_HELP}\n")
         self._prompt_for_cookies()
 
     def _login_only_flow(self):
@@ -1349,27 +1635,24 @@ class main:
             if status != "invalid":
                 if status == "valid":
                     self._session_verified = True
-                    print(f"{gr}[+]{nu} already logged in{detail} ({self.session_file})")
+                    print(f"  {OK} already logged in{detail} ({self.session_file})")
                 else:
                     print(
-                        f"{re}[!]{gr} could not verify the saved session "
+                        f"  {WARN} could not verify the saved session "
                         f"({detail}); keeping it anyway."
                     )
                 print("    To replace it, run --forget-session and then --login again.")
                 return
-            print(
-                f"\n{re}[!]{gr} the saved session in {self.session_file} has expired ({detail}).\n"
-            )
+            print(f"\n  {WARN} the saved session in {self.session_file} has expired ({detail}).\n")
             self._set_cookies({})
             self._stored_session = {}
 
-        print(f"{re}[!]{gr} {LOGIN_HELP}\n")
+        print(f"  {WARN} {LOGIN_HELP}\n")
         if not self._prompt_for_cookies():
             raise InstagramError("no session was provided")
         if not self.save_cookies:
             print(
-                f"{re}[!]{gr} --no-save-session is set, so the session was "
-                "checked but not stored.\n"
+                f"  {WARN} --no-save-session is set, so the session was checked but not stored.\n"
             )
 
     def _check_status(self, response, source):
@@ -1753,7 +2036,7 @@ class main:
                 self.dump_page.write_text(response.text, encoding="utf-8")
                 self._step(f"saved the profile page HTML to {self.dump_page}")
             except OSError as exc:
-                print(f"{re}[!]{gr} could not save the page HTML: {exc}")
+                print(f"  {WARN} could not save the page HTML: {exc}")
         user = self._find_user_in_html(response.text)
         if user is not None:
             self.data_source = "profile page"
@@ -1816,7 +2099,7 @@ class main:
                 target.write_text(response.text, encoding="utf-8")
                 self._step(f"saved the logged-out page HTML to {target}")
             except OSError as exc:
-                print(f"{re}[!]{gr} could not save the page HTML: {exc}")
+                print(f"  {WARN} could not save the page HTML: {exc}")
         user = _embedded_profile(response.text, self.user)
         if user is None:
             raise InstagramError("the logged-out profile page did not embed the profile")
@@ -1961,7 +2244,7 @@ class main:
         self._step(f"transport: {backend}")
         if self.impersonation_missing:
             print(
-                f"\n{re}[!]{gr} curl_cffi is not installed, so requests are not "
+                f"\n  {WARN} curl_cffi is not installed, so requests are not "
                 "browser-impersonated.\n"
                 "    Instagram answers such clients with stripped pages, "
                 "'feedback_required' and 429s.\n"
@@ -1969,7 +2252,7 @@ class main:
             )
         if not self._provided_cookies and not self._stored_session and not self.force_login:
             print(
-                f"\n{re}[!]{gr} no sessionid is set: Instagram will only expose the "
+                f"\n  {WARN} no sessionid is set: Instagram will only expose the "
                 "public profile metadata (name, followers, following, posts).\n"
                 f"    For bio, posts and tags run: python3 main.py -u {self.user} "
                 "--login\n"
@@ -2384,7 +2667,7 @@ class main:
             return
 
         print(
-            f"\n{re}[!]{gr} Instagram only returned the public profile metadata "
+            f"\n  {WARN} Instagram only returned the public profile metadata "
             "because this run is not logged in (bio, posts and tags are hidden)."
         )
         print(
@@ -2397,7 +2680,7 @@ class main:
         try:
             profile = self._fetch_profile()
         except InstagramError as exc:
-            print(f"{re}[!]{gr} could not fetch the full profile: {exc}\n")
+            print(f"  {WARN} could not fetch the full profile: {exc}\n")
             return
 
         self.p_data = profile
@@ -2405,11 +2688,11 @@ class main:
         self._feed_items = {}
         self._user_id = None
         self.posts_error = None
-        print(f"{gr}[+]{nu} full profile available\n")
+        print(f"  {OK} full profile available\n")
 
     def _explain_offline_login(self):
         print(
-            f"{re}[!]{gr} no terminal input is available, so you cannot be asked "
+            f"  {WARN} no terminal input is available, so you cannot be asked "
             "for a sessionid here.\n"
             f"    Run this in a terminal instead: python3 main.py -u {self.user} "
             "--login\n"
@@ -2419,6 +2702,7 @@ class main:
 
     def _warn_limited_data(self):
         if self.limited_data and not self._warned_limited:
+            print()
             if self._session_verified:
                 advice = (
                     "The session itself is valid, so logging in again will not "
@@ -2437,7 +2721,7 @@ class main:
                     "impersonation, or --proxy, to get the full profile."
                 )
             print(
-                f"{re}[!]{gr} only the public profile metadata was available "
+                f"  {WARN} only the public profile metadata was available "
                 f"({self.data_source}): followers/following/posts are shown, but "
                 f"bio, posts and tags are unavailable.\n"
                 f"    {advice}\n"
@@ -2445,8 +2729,9 @@ class main:
             self._warned_limited = True
 
     def _explain_private_profile(self):
+        print()
         print(
-            f"{re}[!]{gr} @{self.user} is private and Instagram returned no "
+            f"  {WARN} @{self.user} is private and Instagram returned no "
             "posts for it.\n"
             "    A private profile is readable only when the logged-in account "
             "follows it and the follow request was accepted.\n"
@@ -2467,14 +2752,12 @@ class main:
 
     def _warn_posts_error(self):
         if self.posts_error and not self._warned_posts_error:
-            print(f"{re}[!]{gr} could not load posts: {self.posts_error}\n")
+            print()
+            print(f"  {WARN} could not load posts: {self.posts_error}\n")
             self._warned_posts_error = True
 
     def _extracted_from_print_data_2(self):
-        extra.banner()
-        for key, value in self.output.items():
-            print(f"{gr}{key:<17} : {nu}{value}")
-        print()
+        ui.profile(self.output, self.user, self.data_source)
 
     def make_dir(self):
         path = os.path.join(self.base_dir, self.user)
@@ -2491,49 +2774,40 @@ class main:
             if self.posts_error:
                 self._warn_posts_error()
             else:
-                print(f"{re}[!]{gr} no posts found\n")
+                print(f"  {WARN} no posts found\n")
             return 1
 
-        print(f"{gr}[+]{nu} user uploads data : \n")
-        for post in self.posts:
-            print(f"{gr}picture : {nu}{extra.tiny_url(post['picture'])}")
-            if post["caption"]:
-                print(f"{gr}Caption : {nu}{post['caption']}")
-            for key, value in post.items():
-                if key not in ("picture", "caption"):
-                    print(f"{gr}{key} : {nu}{value}")
-            print()
+        ui.posts(self.posts)
+        print()
 
     def most_common_tags(self):
         _status.stop()
         self._warn_posts_error()
         captions = sum(1 for post in self.posts if post["caption"])
-        print(f"{gr}[+]{nu} user uploads tags : \n")
-        if not self.tags:
-            print(
-                f"{re}[!]{gr} no hashtags were found in the {captions} captions "
-                f"loaded from {len(self.posts)} posts.\n"
-                "    The tag list is built from post captions, so an account "
-                "that does not use #hashtags has none to count.\n"
-            )
-            if self.max_posts:
-                print(
-                    f"    Only the first {self.max_posts} posts were checked; "
-                    "raise --max-posts or add --all-posts "
-                    "to scan more.\n"
-                )
-            elif not self.all_posts:
-                print(
-                    "    Only the first page of posts was checked; add "
-                    "--all-posts to scan the whole timeline.\n"
-                )
+        if ui.hashtags(self.tags):
             return
-        for key, value in collections.Counter(self.tags).most_common():
-            print(f"{gr}{key:<17} : {nu}{value}")
+        print(
+            f"  {WARN} no hashtags were found in the {captions} captions "
+            f"loaded from {len(self.posts)} posts.\n"
+            "    The tag list is built from post captions, so an account "
+            "that does not use #hashtags has none to count.\n"
+        )
+        if self.max_posts:
+            print(
+                f"    Only the first {self.max_posts} posts were checked; "
+                "raise --max-posts or add --all-posts "
+                "to scan more.\n"
+            )
+        elif not self.all_posts:
+            print(
+                "    Only the first page of posts was checked; add "
+                "--all-posts to scan the whole timeline.\n"
+            )
 
     def save_data(self):
         self.make_dir()
         self._warn_posts_error()
+        print()
 
         # DOWNLOAD PROFILE PICTURE
         if self.profile_pic_url:
@@ -2546,21 +2820,21 @@ class main:
                 )
             except InstagramError as exc:
                 _status.stop()
-                print(f"{re}[!]{gr} could not download profile picture: {exc}")
+                print(f"  {BAD} could not download profile picture: {exc}")
             else:
                 _status.stop()
                 if r.status_code == 200:
                     with open("profile_pic.jpg", "wb") as f:
                         f.write(r.content)
-                    print(f"{gr}[+]{nu} saved pic to {os.getcwd()}/profile_pic.jpg")
+                    ui.saved("avatar", os.path.join(os.getcwd(), "profile_pic.jpg"))
                 else:
-                    print(f"{re}[!]{gr} could not download profile picture: HTTP {r.status_code}")
+                    print(f"  {WARN} could not download profile picture: HTTP {r.status_code}")
 
         # SAVES PROFILE DATA TO TEXT FILE
         self.output_data = self._profile_details()
         with open("profile_data.txt", "w") as f:
             f.write(json.dumps(self.output_data))
-        print(f"{gr}[+]{nu} saved data to {os.getcwd()}/profile_data.txt")
+        ui.saved("profile data", os.path.join(os.getcwd(), "profile_data.txt"))
 
         # SAVES INFORMATION
         posts = {}
@@ -2573,9 +2847,10 @@ class main:
 
         with open("posts_data.txt", "w") as f:
             f.write(json.dumps(posts))
-        print(f"{gr}[+]{nu} saved post info to {os.getcwd()}/posts_data.txt")
+        ui.saved("post info", os.path.join(os.getcwd(), "posts_data.txt"))
 
         # SAVES TAGS
         with open("tags.txt", "w") as f:
             f.write(json.dumps(self.tags))
-        print(f"{gr}[+]{nu} saved tags to {os.getcwd()}/tags.txt\n")
+        ui.saved("tags", os.path.join(os.getcwd(), "tags.txt"))
+        print()

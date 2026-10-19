@@ -34,8 +34,17 @@ the same code is available as the `soig` command.
 
 ### Changed
 
+- The report is a sectioned card: a framed `SoIG` wordmark, cyan `▌ PROFILE` /
+  `▌ POSTS` / `▌ HASHTAGS` headings over a rule, grouped counts
+  (`74,877`), `✓` / `!` / `✗` status marks, a numbered post list with likes,
+  comments, date, location and URL, and a ranked hashtag list with inline bars.
+  Empty fields are left out, long values wrap at the terminal width, and
+  everything falls back to ASCII on non-UTF-8 terminals.
 - The `[step]` trace is printed **only** with `-d/--debug`. A normal run shows
   the report plus the progress line.
+- The banner is printed once, before the first request, so warnings no longer
+  appear above it. The old ASCII logo and its "Coded By" credit are gone; the
+  author credit is the hidden `--credits` token.
 - `-m/--max-posts` is independent of `-a/--all-posts`: `-m N` alone pages as far
   as needed and keeps exactly N posts, while `-a -m N` caps the walk at N.
 - `--login` and `--forget-session` (and `--inspect-page`) no longer require

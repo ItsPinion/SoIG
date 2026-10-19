@@ -68,7 +68,7 @@ answers with a login page instead. When that happens SoIG asks for a `sessionid`
 and keeps asking until it gets one that works:
 
 ```text
-[!] Instagram is asking for a logged-in session.
+  ! Instagram is asking for a logged-in session.
   1. Log in to https://www.instagram.com in your browser.
   2. Open the developer tools (F12) -> Application -> Storage -> Cookies ->
      instagram.com and copy the value of the 'sessionid' cookie.
@@ -85,9 +85,9 @@ avoids the 403/429 responses Instagram sends when only `sessionid` is present.
 
 Each value is checked against Instagram before it is used:
 
-- **`[+] sessionid works (logged in as @you)`** - the cookie is valid and the
+- **`✓ sessionid works (logged in as @you)`** - the cookie is valid and the
   scrape continues.
-- **`[!] that sessionid does not work (...)`** - the cookie was rejected, so it
+- **`! that sessionid does not work (...)`** - the cookie was rejected, so it
   is discarded and you are asked again. Press Enter to give up.
 
 Values are only ever typed at the prompt (or stored in the JSON file described
@@ -104,7 +104,7 @@ apart:
   Instagram is throttling the connection, so pasting another sessionid will not
   help. Wait for the time shown (Instagram often asks for 10-60 minutes) and run
   the command again.
-- **`[!] Instagram is asking for a logged-in session.`** means the cookie really
+- **`! Instagram is asking for a logged-in session.`** means the cookie really
   is missing or rejected, and SoIG prompts for one.
 
 To keep working when `web_profile_info` is throttled, SoIG automatically tries
@@ -176,6 +176,53 @@ $ python3 main.py -u <username> -d -a -m 500   # trace, 500 posts
 | `-d`, `--debug` | the full `[step]` trace instead of the progress line, with URLs and statuses |
 | `-j PATH`, `--json PATH` | the same result as JSON (`-j -` prints only JSON on stdout) |
 
+A report looks like this (add `-p` for the post list, `-t` for hashtags):
+
+```text
+╭────────────────────────────────────────────────────────────────────────────╮
+│  SoIG  ·  Instagram profile scraper                                v1.0.0  │
+╰────────────────────────────────────────────────────────────────────────────╯
+
+  ▌ PROFILE                                                   via profile page
+──────────────────────────────────────────────────────────────────────────────
+
+  @prottoy.raha.r  ·  Prottoy Raha                                  ✓ verified
+  instagram.com/prottoy.raha.r
+
+  Followers    12,345 │ Following     321 │ Posts       87
+
+  Bio         Building things, mostly on the internet.
+  Website     https://prottoy.example
+  Category    Creator
+```
+
+Numbers are grouped, empty fields are left out, and the posts/hashtags sections
+look like this:
+
+```text
+  ▌ POSTS                                                            2 loaded
+──────────────────────────────────────────────────────────────────────────────
+
+    1  A new project is out today — read the thread.
+       1,234 likes · 56 comments · 02 Mar 2026 · Kolkata, India
+       instagram.com/p/abc123
+
+    2  (no caption)
+       12 likes · 0 comments · comments off
+       instagram.com/p/def456
+
+  ▌ HASHTAGS                                           23 mentions · 4 unique
+──────────────────────────────────────────────────────────────────────────────
+
+  #buildinpublic  ████████████████████  12
+  #python         ████████████░░░░░░░░   7
+  #osint          █████░░░░░░░░░░░░░░░   3
+  #ai             ██░░░░░░░░░░░░░░░░░░   1
+```
+
+The framed wordmark, block bars and box-drawing rules fall back to ASCII
+(`+---+`, `#`, `-`) when the terminal is not UTF-8, and `-q` hides the wordmark.
+
 On success the JSON document has `tool`, `version`, `exit_code`, `scraped_at`,
 `username`, `profile`, `posts`, `tags`, `posts_error` and `limited_data`; a
 failed run keeps the metadata and adds an `error` string. It can be fed straight
@@ -220,7 +267,7 @@ result can be traced to the request that caused it:
 [step] saved session: /home/you/.config/SoIG/session.json (csrftoken, sessionid)
 [step] checking the saved session with Instagram ...
 [step] saved session check: valid (HTTP 200)
-[+] using the saved session (logged in as @you) (/home/you/.config/SoIG/session.json)
+  ✓ using the saved session (logged in as @you) (/home/you/.config/SoIG/session.json)
 [step] session: set
 [step] trying 11 profile sources ...
 [step] 1/11 profile API ...
@@ -325,8 +372,8 @@ Instead of pasting one long string, SoIG asks for the values it needs:
 ```text
 sessionid (or the whole Cookie header): …
 csrftoken (optional, press Enter to fetch it automatically): …
-[+] sessionid works (logged in as @you)
-[+] saved session to /home/you/.config/SoIG/session.json
+  ✓ sessionid works (logged in as @you)
+  ✓ saved session to /home/you/.config/SoIG/session.json
 ```
 
 `sessionid` is the cookie that actually identifies you; `csrftoken` is sent back
@@ -339,14 +386,14 @@ Every cookie is stored as JSON with owner-only permissions (`0600`, folder
 `0700`) and reused automatically on later runs:
 
 ```text
-[+] using the saved session (logged in as @you) (/home/you/.config/SoIG/session.json)
+  ✓ using the saved session (logged in as @you) (/home/you/.config/SoIG/session.json)
 ```
 
 When Instagram stops accepting them, SoIG says so and asks again, replacing the
 file:
 
 ```text
-[!] the saved session in …/session.json has expired (HTTP 401).
+  ! the saved session in …/session.json has expired (HTTP 401).
     Please log in again.
 ```
 

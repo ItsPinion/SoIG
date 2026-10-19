@@ -199,10 +199,10 @@ class ProfileTests(BaseTestCase):
         with contextlib.redirect_stdout(out):
             ig.print_data_()
         text = out.getvalue()
-        self.assertIn("username", text)
-        self.assertNotIn("most used user tags", text)
-        self.assertNotIn("user uploads tags", text)
-        self.assertNotRegex(text, r"modern\s+:")
+        self.assertIn("@prottoy.raha.r", text)
+        self.assertIn("PROFILE", text)
+        self.assertNotIn("HASHTAGS", text)
+        self.assertNotIn("POSTS", text)
 
     def test_tag_flag_output_has_the_tag_section(self):
         ig = self.make(MODERN_USER, feed=MODERN_FEED)
@@ -210,7 +210,9 @@ class ProfileTests(BaseTestCase):
         with contextlib.redirect_stdout(out):
             ig.print_data()
             ig.most_common_tags()
-        self.assertIn("user uploads tags", out.getvalue())
+        text = out.getvalue()
+        self.assertIn("HASHTAGS", text)
+        self.assertIn("#modern", text)
 
     def test_most_common_tags_explains_an_empty_list(self):
         feed = [{"node": {"caption": {"text": "no tags here"}}}]
@@ -1800,7 +1802,7 @@ class ThrottlingTests(BaseTestCase):
         with mock.patch("os.system") as system, contextlib.redirect_stdout(out):
             ig.print_data_()
         system.assert_not_called()
-        self.assertIn("followers", out.getvalue())
+        self.assertIn("Followers", out.getvalue())
 
     def test_eof_on_stdin_cancels(self):
         with mock.patch.object(sys, "stdin", io.StringIO("")):
@@ -2014,6 +2016,175 @@ class ProgressTests(unittest.TestCase):
         self.assertFalse(api._status.active)
         api._status.start("again")
         self.assertFalse(api._status.active)
+
+
+class Utf8Stream(io.StringIO):
+    encoding = "utf-8"
+
+
+class ReportTests(unittest.TestCase):
+    """The human report: grouped numbers, sections, badges and ASCII fallbacks."""
+
+    def setUp(self):
+        api.set_color(False)
+        api.set_quiet(False)
+
+    def tearDown(self):
+        api.set_color(True)
+
+    @staticmethod
+    def render(call):
+        out = Utf8Stream()
+        with contextlib.redirect_stdout(out):
+            call()
+        return out.getvalue()
+
+    def profile(self, **overrides):
+        data = {
+            "username": "someone",
+            "name": "Some One",
+            "url": "instagram.com/someone",
+            "followers": "1200",
+            "following": "3",
+            "posts": "10",
+            "bio": "",
+            "verified": "True",
+            "private": "False",
+            "business category": "",
+            "connected to fb": "",
+            "business account": "False",
+            "joined recently": "False",
+        }
+        data.update(overrides)
+        return self.render(lambda: api.ui.profile(data, "someone", "profile page"))
+
+    def test_counts_are_grouped(self):
+        self.assertEqual(api.ui.count("74877"), "74,877")
+        self.assertEqual(api.ui.count("8,278"), "8,278")
+        self.assertEqual(api.ui.count("1.2K"), "1.2K")
+        self.assertEqual(api.ui.count(""), "0")
+        self.assertEqual(api.ui.count("n/a"), "n/a")
+
+    def test_clip_uses_an_ellipsis(self):
+        self.assertEqual(api.ui._clip("a\n b   c", 20), "a b c")
+        self.assertTrue(api.ui._clip("x" * 40, 10).endswith("…"))
+        self.assertEqual(len(api.ui._clip("x" * 40, 10)), 10)
+
+    def test_timestamps_are_humanised(self):
+        self.assertEqual(api.ui.when("2026-03-02T10:00:00+00:00"), "02 Mar 2026")
+        self.assertEqual(api.ui.when(""), "")
+        self.assertEqual(api.ui.when("None"), "")
+
+    def test_profile_card(self):
+        text = self.profile()
+        self.assertIn("@someone", text)
+        self.assertIn("Some One", text)
+        self.assertIn("1,200", text)
+        self.assertIn("│", text)
+        self.assertIn("verified", text)
+        self.assertIn("via profile page", text)
+        self.assertNotIn("private", text)
+        self.assertNotIn("Bio", text)
+
+    def test_profile_shows_bio_and_category(self):
+        text = self.profile(bio="hello there", **{"business category": "Creator"})
+        self.assertIn("hello there", text)
+        self.assertIn("Creator", text)
+        self.assertIn("private", self.profile(private="True"))
+
+    def test_posts_are_numbered_with_meta_and_url(self):
+        posts = [
+            {
+                "caption": "#one",
+                "likes": "1234",
+                "comments": "5",
+                "comments disabled": "False",
+                "timestamp": "",
+                "location": "None",
+                "url": "instagram.com/p/abc",
+            },
+            {"caption": "", "likes": "0", "comments": "0", "url": "instagram.com/p/def"},
+        ]
+        text = self.render(lambda: api.ui.posts(posts))
+        self.assertIn("2 loaded", text)
+        self.assertIn("1,234 likes · 5 comments", text)
+        self.assertIn("(no caption)", text)
+        self.assertIn("instagram.com/p/abc", text)
+        self.assertIn("instagram.com/p/def", text)
+
+    def test_hashtags_scaled_bars(self):
+        text = self.render(lambda: api.ui.hashtags({"one": 4, "two": 2}))
+        self.assertIn("6 mentions · 2 unique", text)
+        self.assertIn("#one", text)
+        self.assertIn("█" * 20, text)
+        self.assertIn("█" * 10 + "░" * 10, text)
+
+    def test_hashtags_empty(self):
+        with contextlib.redirect_stdout(Utf8Stream()):
+            self.assertFalse(api.ui.hashtags({}))
+
+    def test_banner_and_marks_fall_back_to_ascii(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            api.ui.banner()
+            print(api.ui.section("Profile", "via profile page"))
+            marks = str(api.OK), str(api.WARN)
+        text = out.getvalue()
+        self.assertIn("+", text)
+        self.assertIn("| PROFILE", text)
+        self.assertIn("via profile page", text)
+        self.assertNotIn("╭", text)
+        self.assertEqual(marks, ("+", "!"))
+
+    def test_banner_uses_unicode_on_a_utf8_terminal(self):
+        text = self.render(api.ui.banner)
+        self.assertIn("╭", text)
+        self.assertIn("SoIG", text)
+        self.assertIn(api.__version__, text)
+
+    def test_banner_is_silent_with_quiet(self):
+        api.set_quiet(True)
+        try:
+            self.assertEqual(self.render(api.ui.banner), "")
+        finally:
+            api.set_quiet(False)
+
+    def test_nothing_runs_past_the_terminal(self):
+        def everything():
+            api.ui.banner()
+            api.ui.profile(
+                {
+                    "username": "a" * 40,
+                    "name": "A Very Long Display Name That Should Be Clipped",
+                    "url": "instagram.com/" + "a" * 40,
+                    "followers": "1234567",
+                    "following": "0",
+                    "posts": "9",
+                    "bio": "long bio " * 30,
+                    "external url": "https://example.com/" + "segment/" * 20,
+                },
+                "a" * 40,
+                "profile page",
+            )
+            api.ui.posts(
+                [
+                    {
+                        "caption": "caption " * 40,
+                        "likes": "1",
+                        "comments": "2",
+                        "url": "instagram.com/p/" + "z" * 40,
+                    }
+                ]
+            )
+            api.ui.hashtags({"averyveryverylonghashtagname": 3, "b": 1})
+            api.ui.saved("profile data", "/tmp/" + "very-long-folder/" * 8 + "profile_data.txt")
+
+        with mock.patch.object(
+            api.shutil, "get_terminal_size", return_value=os.terminal_size((80, 24))
+        ):
+            text = self.render(everything)
+        over = [line for line in text.splitlines() if len(line) > 78]
+        self.assertEqual(over, [])
 
 
 if __name__ == "__main__":
